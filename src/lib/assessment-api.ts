@@ -218,6 +218,62 @@ export async function getAssessmentHistory(): Promise<{ history: AssessmentHisto
   return data;
 }
 
+export interface AssessmentStatsResponse {
+  total_assessments: number;
+  completed_assessments: number;
+  in_progress_assessments: number;
+  average_score: number;
+  highest_score: number;
+  total_questions_attempted: number;
+  auto_submitted_count: number;
+}
+
+export async function getAssessmentStats(): Promise<AssessmentStatsResponse> {
+  const headers = getAuthHeaders();
+  const url = `${API_BASE_URL}/api/assessments/stats`;
+
+  const res = await fetch(url, {
+    method: 'GET',
+    headers,
+  });
+
+  const data = await res.json().catch(() => ({}));
+
+  if (!res.ok) {
+    const errorMsg =
+      data.detail ||
+      (Array.isArray(data.detail) ? data.detail[0]?.msg : null) ||
+      `Failed to fetch assessment statistics (${res.status})`;
+    throw new Error(errorMsg);
+  }
+
+  return data as AssessmentStatsResponse;
+}
+
+export async function deleteAssessment(
+  assessmentId: number
+): Promise<{ success: boolean; message: string }> {
+  const headers = getAuthHeaders();
+  const url = `${API_BASE_URL}/api/assessments/${assessmentId}`;
+
+  const res = await fetch(url, {
+    method: 'DELETE',
+    headers,
+  });
+
+  const data = await res.json().catch(() => ({}));
+
+  if (!res.ok) {
+    const errorMsg =
+      data.detail ||
+      (Array.isArray(data.detail) ? data.detail[0]?.msg : null) ||
+      `Failed to delete assessment (${res.status})`;
+    throw new Error(errorMsg);
+  }
+
+  return data;
+}
+
 export async function getAssessment(
   assessmentId: number
 ): Promise<AssessmentDetailResponse> {

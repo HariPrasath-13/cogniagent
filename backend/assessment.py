@@ -1062,6 +1062,35 @@ def get_history(user: AuthenticatedUser = Depends(current_user)):
     return {"history": [dict(row) for row in rows]}
 
 
+@router.get("/stats")
+def get_assessment_stats(user: AuthenticatedUser = Depends(current_user)):
+    with db() as conn:
+        rows = conn.execute("""
+            SELECT id, score, total_questions, status, created_at, completed_at, auto_submitted
+            FROM assessments
+            WHERE user_id = ? OR user_email = ?
+        """, (user.id, user.email)).fetchall()
+
+    total_assessments = len(rows)
+    completed = [r for r in rows if r["status"] == "completed" and r["score"] is not None]
+    total_completed = len(completed)
+    scores = [r["score"] for r in completed]
+    avg_score = round(sum(scores) / len(scores), 1) if scores else 0.0
+    highest_score = round(max(scores), 1) if scores else 0.0
+    total_questions = sum(r["total_questions"] for r in rows)
+    auto_submitted_count = sum(1 for r in rows if r["auto_submitted"])
+
+    return {
+        "total_assessments": total_assessments,
+        "completed_assessments": total_completed,
+        "in_progress_assessments": total_assessments - total_completed,
+        "average_score": avg_score,
+        "highest_score": highest_score,
+        "total_questions_attempted": total_questions,
+        "auto_submitted_count": auto_submitted_count,
+    }
+
+
 @router.get("/{assessment_id}")
 def get_assessment(
     assessment_id: int,
@@ -1114,6 +1143,21 @@ def get_assessment(
         "created_at": row["created_at"],
         "completed_at": row["completed_at"]
     }
+
+
+@router.delete("/{assessment_id}")
+def delete_assessment(
+    assessment_id: int,
+    user: AuthenticatedUser = Depends(current_user)
+):
+    with db() as conn:
+        cursor = conn.execute("""
+            DELETE FROM assessments
+            WHERE id = ? AND (user_id = ? OR user_email = ?)
+        """, (assessment_id, user.id, user.email))
+        if cursor.rowcount == 0:
+            raise HTTPException(404, "Assessment not found.")
+    return {"success": True, "message": f"Assessment {assessment_id} deleted successfully."}
 
 
 init_db()
