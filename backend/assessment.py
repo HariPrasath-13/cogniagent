@@ -174,9 +174,18 @@ def ask_qwen(prompt: str, as_json: bool = True) -> str:
                 print(f"[GROQ AI] Response received in {elapsed:.2f}s", flush=True)
                 return content
             else:
-                print(f"[GROQ AI WARNING] HTTP {resp.status_code}: {resp.text}", flush=True)
+                err_msg = resp.text
+                try:
+                    err_msg = resp.json().get("error", {}).get("message", resp.text)
+                except Exception:
+                    pass
+                print(f"[GROQ AI WARNING] HTTP {resp.status_code}: {err_msg}", flush=True)
+                raise HTTPException(502, f"Groq Cloud AI error ({resp.status_code}): {err_msg}")
+        except HTTPException:
+            raise
         except Exception as e:
             print(f"[GROQ AI ERROR] Failed: {e}", flush=True)
+            raise HTTPException(502, f"Groq Cloud AI connection error: {str(e)}")
 
     # 2. Cloud Google Gemini API
     gemini_key = os.getenv("GEMINI_API_KEY", "").strip()
