@@ -2,6 +2,7 @@ import os
 import sys
 import time
 import secrets
+import requests
 import smtplib
 import sqlite3
 import hashlib
@@ -36,7 +37,10 @@ SENDER_EMAIL = os.getenv("SENDER_EMAIL", "fakeharish13@gmail.com")
 SENDER_APP_PASSWORD = os.getenv("SENDER_APP_PASSWORD", "")
 SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com")
 SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
+RESEND_FROM_EMAIL = os.getenv("RESEND_FROM_EMAIL", "CogniAgent <onboarding@resend.dev>")
 DATABASE_PATH = os.path.join(os.path.dirname(__file__), os.getenv("DATABASE_PATH", "auth.db"))
+
 
 OTP_EXPIRY_SECONDS = 300  # 5 minutes
 OTP_COOLDOWN_SECONDS = 60  # 1 minute between resends
@@ -174,30 +178,64 @@ This code will expire in 5 minutes. If you did not request this code, you can sa
     msg.attach(MIMEText(body_html, "html"))
 
     delivery_err = ""
-    # Attempt 1: Port 587 (STARTTLS)
-    try:
-        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=6) as server:
-            server.starttls()
-            server.login(SENDER_EMAIL, SENDER_APP_PASSWORD)
-            server.sendmail(SENDER_EMAIL, recipient_email, msg.as_string())
-        return True, "Email sent successfully"
-    except Exception as e:
-        delivery_err = str(e)
-        print(f"[AUTH SMTP] Port 587 attempt failed: {e}. Trying SSL port 465...", flush=True)
 
-    # Attempt 2: Port 465 (Direct SSL)
-    try:
-        with smtplib.SMTP_SSL(SMTP_HOST, 465, timeout=6) as server:
-            server.login(SENDER_EMAIL, SENDER_APP_PASSWORD)
-            server.sendmail(SENDER_EMAIL, recipient_email, msg.as_string())
-        return True, "Email sent successfully via SSL (465)"
-    except Exception as e:
-        delivery_err = str(e)
-        print(f"[AUTH SMTP] Port 465 attempt failed: {e}", flush=True)
+    # Priority 1: Resend HTTP API (Works on Render, Vercel, and all cloud hosts without SMTP firewall blocks)
+    if RESEND_API_KEY and RESEND_API_KEY.strip():
+        try:
+            resend_payload = {
+                "from": RESEND_FROM_EMAIL,
+                "to": [recipient_email],
+                "subject": subject,
+                "html": body_html,
+                "text": body_text
+            }
+            resp = requests.post(
+                "https://api.resend.com/emails",
+                headers={
+                    "Authorization": f"Bearer {RESEND_API_KEY}",
+                    "Content-Type": "application/json"
+                },
+                json=resend_payload,
+                timeout=8
+            )
+            if resp.status_code in (200, 201):
+                print(f"[AUTH RESEND] OTP email dispatched to {recipient_email} via Resend: {resp.text}", flush=True)
+                return True, "Verification email delivered to your inbox."
+            else:
+                err_data = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
+                err_msg = err_data.get("message", resp.text)
+                print(f"[AUTH RESEND WARNING] Resend HTTP {resp.status_code}: {err_msg}", flush=True)
+                delivery_err = f"Resend: {err_msg}"
+        except Exception as rex:
+            print(f"[AUTH RESEND EXCEPTION] {rex}", flush=True)
+            delivery_err = f"Resend request error: {str(rex)}"
 
-    # Fallback: Cloud hosting (e.g. Render Free) blocks outbound SMTP ports
+    # Priority 2: Direct SMTP (Works on local networks or unrestricted clouds)
+    if SENDER_APP_PASSWORD and SENDER_APP_PASSWORD.strip():
+        # Attempt: Port 587 (STARTTLS)
+        try:
+            with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=6) as server:
+                server.starttls()
+                server.login(SENDER_EMAIL, SENDER_APP_PASSWORD)
+                server.sendmail(SENDER_EMAIL, recipient_email, msg.as_string())
+            return True, "Email sent successfully"
+        except Exception as e:
+            delivery_err = str(e)
+            print(f"[AUTH SMTP] Port 587 attempt failed: {e}. Trying SSL port 465...", flush=True)
+
+        # Attempt: Port 465 (Direct SSL)
+        try:
+            with smtplib.SMTP_SSL(SMTP_HOST, 465, timeout=6) as server:
+                server.login(SENDER_EMAIL, SENDER_APP_PASSWORD)
+                server.sendmail(SENDER_EMAIL, recipient_email, msg.as_string())
+            return True, "Email sent successfully via SSL (465)"
+        except Exception as e:
+            delivery_err = str(e)
+            print(f"[AUTH SMTP] Port 465 attempt failed: {e}", flush=True)
+
+    # Fallback: Safe display if all email methods are blocked
     print(f"[AUTH OTP CODE] Verification code for {recipient_email}: {otp_code}", flush=True)
-    return False, f"Cloud firewall blocked outbound SMTP ({delivery_err}). Your verification code is: {otp_code}"
+    return False, f"Cloud firewall blocked outbound email ({delivery_err}). Your verification code is: {otp_code}"
 
 from fastapi.openapi.docs import get_swagger_ui_html
 
