@@ -147,53 +147,46 @@ def ask_qwen(prompt: str, as_json: bool = True) -> str:
     # 1. Cloud Groq AI (Superfast: ~1 second inference)
     groq_api_key = os.getenv("GROQ_API_KEY", "").strip()
     if groq_api_key:
-        preferred_model = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
-        models_to_try = [preferred_model, "llama-3.1-8b-instant", "llama-3.2-3b-preview", "llama3-8b-8192"]
-        # Deduplicate while preserving order
-        models_to_try = list(dict.fromkeys(models_to_try))
+        active_models = ["llama-3.1-8b-instant", "llama-3.3-70b-versatile", "mixtral-8x7b-32768"]
+        headers = {
+            "Authorization": f"Bearer {groq_api_key}",
+            "Content-Type": "application/json"
+        }
 
-        last_groq_err = None
-        for groq_model in models_to_try:
-            print(f"[GROQ AI] Calling {groq_model} (prompt_len={len(prompt)}, as_json={as_json})...", flush=True)
-            try:
-                t0 = time.time()
-                headers = {
-                    "Authorization": f"Bearer {groq_api_key}",
-                    "Content-Type": "application/json"
-                }
-                body = {
-                    "model": groq_model,
-                    "messages": [
-                        {"role": "system", "content": "You are an expert educational assessment generator. Follow instructions exactly and output valid JSON when requested."},
-                        {"role": "user", "content": prompt}
-                    ],
-                    "temperature": 0.2
-                }
-                if as_json:
-                    body["response_format"] = {"type": "json_object"}
+        for groq_model in active_models:
+            # Try with and without json_object response_format to prevent 400 schema errors
+            for try_json_format in [True, False]:
+                try:
+                    t0 = time.time()
+                    body = {
+                        "model": groq_model,
+                        "messages": [
+                            {
+                                "role": "system",
+                                "content": "You are an expert assessment generator. You must return valid JSON matching the requested structure."
+                            },
+                            {"role": "user", "content": prompt}
+                        ],
+                        "temperature": 0.2
+                    }
+                    if try_json_format:
+                        body["response_format"] = {"type": "json_object"}
 
-                resp = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=body, timeout=45)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    content = data["choices"][0]["message"]["content"].strip()
-                    elapsed = time.time() - t0
-                    print(f"[GROQ AI] Model {groq_model} responded in {elapsed:.2f}s!", flush=True)
-                    return content
-                elif resp.status_code == 404:
-                    print(f"[GROQ AI] Model {groq_model} not found (404), trying next model in list...", flush=True)
-                    continue
-                else:
-                    err_msg = resp.text
-                    try:
-                        err_msg = resp.json().get("error", {}).get("message", resp.text)
-                    except Exception:
-                        pass
-                    last_groq_err = f"Groq Cloud AI error ({resp.status_code}): {err_msg}"
-            except Exception as e:
-                last_groq_err = f"Groq Cloud AI connection error: {str(e)}"
-
-        if last_groq_err:
-            print(f"[GROQ AI WARNING] {last_groq_err}", flush=True)
+                    resp = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=body, timeout=30)
+                    if resp.status_code == 200:
+                        content = resp.json()["choices"][0]["message"]["content"].strip()
+                        elapsed = time.time() - t0
+                        print(f"[GROQ AI] Success with {groq_model} in {elapsed:.2f}s!", flush=True)
+                        return content
+                    elif resp.status_code == 400 and try_json_format:
+                        # Retry this same model without response_format
+                        continue
+                    else:
+                        print(f"[GROQ AI] Model {groq_model} returned {resp.status_code}, trying next...", flush=True)
+                        break
+                except Exception as ex:
+                    print(f"[GROQ AI] Model {groq_model} exception: {ex}", flush=True)
+                    break
 
     # 2. Cloud Google Gemini API
     gemini_key = os.getenv("GEMINI_API_KEY", "").strip()
@@ -226,14 +219,21 @@ def generate_fallback_questions(
     question_type: str = "mcq",
     difficulty: str = "medium"
 ) -> list[dict]:
+    # Clean text and filter out presentation headers and course metadata
     cleaned = re.sub(r'\s+', ' ', text).strip()
-    sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', cleaned) if 35 <= len(s.strip()) <= 280]
+    raw_sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', cleaned) if len(s.strip()) >= 30]
 
-    if len(sentences) < count:
-        sentences = [p.strip() for p in text.split("\n") if len(p.strip()) >= 30]
+    filtered_sentences = []
+    for s in raw_sentences:
+        s_clean = re.sub(r'^(?:Lecture Material|UNIT\s+[IVX0-9]+|Slide\s+\d+|[0-9]+\.\s+)+', '', s, flags=re.IGNORECASE).strip()
+        s_lower = s_clean.lower()
+        if any(ign in s_lower for ign in ["lecture material", "course code", "syllabus", "prepared by", "department of", "page "]):
+            continue
+        if len(s_clean.split()) >= 5 and len(s_clean) >= 35:
+            filtered_sentences.append(s_clean)
 
-    if not sentences:
-        sentences = ["The provided document contains important concepts and information regarding this topic."]
+    if len(filtered_sentences) < count:
+        filtered_sentences = raw_sentences if raw_sentences else ["The provided document contains key foundational concepts."]
 
     questions = []
     q_type = (question_type or "mcq").strip().lower()
@@ -243,23 +243,49 @@ def generate_fallback_questions(
     mcq_count = count if q_type == "mcq" else (0 if q_type == "question_answer" else max(1, count // 2 + 1))
     qa_count = count - mcq_count if q_type == "mixed" else (count if q_type == "question_answer" else 0)
 
-    # 1. Generate Multiple Choice Questions from the document
-    for i in range(mcq_count):
-        idx = (i * 2) % len(sentences)
-        target = sentences[idx]
+    # Question stem templates to avoid repetitive phrasing
+    stems = [
+        "According to the document, what is the primary function or definition of the concept discussed?",
+        "Based on the provided text, which of the following is identified as a fundamental characteristic or principle?",
+        "In the context of the study material, what is stated regarding the transmission and delivery requirements?",
+        "Which of the following statements accurately reflects the core explanation given in the material?",
+        "What key condition or rule is emphasized in the uploaded document?"
+    ]
 
+    # 1. Generate Multiple Choice Questions from informative sentences
+    for i in range(mcq_count):
+        idx = (i * 2) % len(filtered_sentences)
+        target = filtered_sentences[idx]
+
+        # Extract subject / predicate for natural phrasing
+        m_def = re.match(r'^([A-Za-z\s]{3,35})\s+(?:are|is|refers to|is defined as|means)\s+(.+)', target, re.IGNORECASE)
+        m_dep = re.search(r'([A-Za-z\s]{4,40})\s+(?:depends on|consists of|requires)\s+(.+)', target, re.IGNORECASE)
+
+        if m_def:
+            term = m_def.group(1).strip()
+            def_text = m_def.group(2).strip().rstrip('.')
+            q_stem = f"According to the material, what is the definition or role of '{term}'?"
+            correct_val = def_text[:90] + ("..." if len(def_text) > 90 else "")
+        elif m_dep:
+            subj = m_dep.group(1).strip()
+            pred = m_dep.group(2).strip().rstrip('.')
+            q_stem = f"Based on the text, what does {subj.lower()} primarily depend on or involve?"
+            correct_val = pred[:90] + ("..." if len(pred) > 90 else "")
+        else:
+            q_stem = stems[i % len(stems)]
+            correct_val = target[:90] + ("..." if len(target) > 90 else "")
+
+        # Pick 3 plausible distractors from other sentences in the same document
         distractors = []
         for offset in [1, 2, 3]:
-            d_idx = (idx + offset) % len(sentences)
+            d_idx = (idx + offset) % len(filtered_sentences)
             if d_idx != idx:
-                d_text = sentences[d_idx]
-                distractors.append(d_text[:90] + ("..." if len(d_text) > 90 else ""))
+                d_text = filtered_sentences[d_idx]
+                distractors.append(d_text[:85] + ("..." if len(d_text) > 85 else ""))
         while len(distractors) < 3:
-            distractors.append("None of the concepts outlined in the document apply.")
+            distractors.append("Unrelated or contrary to the principles described in the document.")
 
-        correct_text = target[:90] + ("..." if len(target) > 90 else "")
-        all_options = [correct_text] + distractors[:3]
-
+        all_options = [correct_val] + distractors[:3]
         correct_letter = ["A", "B", "C", "D"][i % 4]
         c_idx = ord(correct_letter) - ord("A")
         all_options[0], all_options[c_idx] = all_options[c_idx], all_options[0]
@@ -273,28 +299,28 @@ def generate_fallback_questions(
 
         questions.append({
             "type": "mcq",
-            "question": f"Based on the uploaded document, which of the following statements accurately reflects the material?",
+            "question": q_stem,
             "options": formatted_options,
             "correct_answer": correct_letter,
             "explanation": f"Referenced directly from the source material: \"{target}\""
         })
 
-    # 2. Generate Descriptive Q&A Questions from the document
+    # 2. Generate Descriptive Q&A Questions from informative sentences
     for j in range(qa_count):
-        idx = (j * 2 + 1) % len(sentences)
-        target = sentences[idx]
+        idx = (j * 2 + 1) % len(filtered_sentences)
+        target = filtered_sentences[idx]
 
         words = [w for w in re.findall(r'\b[A-Za-z]{4,}\b', target) if w.lower() not in ('this', 'that', 'with', 'from', 'have', 'were', 'they', 'which', 'about', 'their')]
         rubric_items = words[:3] if len(words) >= 3 else ["Core concept accuracy", "Clarity of explanation", "Reference to document"]
 
         questions.append({
             "type": "question_answer",
-            "question": f"Based on the uploaded material, explain the significance and details of: \"{target[:80]}...\"",
+            "question": f"Explain the key concept and operational requirements discussed in this excerpt: \"{target[:95]}...\"",
             "reference_answer": target,
             "rubric": rubric_items
         })
 
-    print(f"[ASSESSMENT GEN] Document intelligence engine generated {len(questions)} questions directly from uploaded PDF!", flush=True)
+    print(f"[ASSESSMENT GEN] Document intelligence engine generated {len(questions)} natural questions directly from PDF!", flush=True)
     return questions[:count]
 
 
