@@ -201,14 +201,24 @@ app = FastAPI(
 )
 
 # CORS setup
+allowed_origins_env = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "").split(",") if o.strip()]
+origins = list(set([FRONTEND_ORIGIN, "http://localhost:3000", "http://127.0.0.1:3000"] + allowed_origins_env))
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[FRONTEND_ORIGIN, "http://localhost:3000", "http://127.0.0.1:3000"],
-    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1|10\.\d+\.\d+\.\d+)(:\d+)?$",
+    allow_origins=origins,
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1|10\.\d+\.\d+\.\d+|.*\.vercel\.app)(:\d+)?$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.get("/", tags=["Health"])
+def root():
+    return {"status": "ok", "service": "CogniAgent API", "version": "1.0.0"}
+
+
 
 
 @app.get("/docs", include_in_schema=False)

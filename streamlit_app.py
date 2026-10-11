@@ -17,44 +17,31 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ---------- CUSTOM CSS ----------
+# ---------- CUSTOM CSS (DARK/LIGHT THEME COMPATIBLE) ----------
 st.markdown("""
 <style>
-    .main-header {
-        font-size: 1.8rem;
-        font-weight: 800;
-        color: #4F46E5;
-        margin-bottom: 0.2rem;
-    }
-    .sub-header {
-        color: #6B7280;
-        font-size: 0.95rem;
-        margin-bottom: 1.5rem;
-    }
-    .summary-box {
-        background-color: #EEF2FF;
-        border: 1px solid #C7D2FE;
-        border-radius: 12px;
-        padding: 16px;
-        margin-top: 15px;
-        margin-bottom: 15px;
-    }
     .timer-badge {
-        font-family: monospace;
-        font-size: 1.4rem;
-        font-weight: bold;
-        padding: 8px 16px;
-        border-radius: 10px;
-        background-color: #EEF2FF;
-        border: 1px solid #6366F1;
-        color: #4F46E5;
+        font-family: 'Courier New', Courier, monospace;
+        font-size: 1.5rem;
+        font-weight: 800;
+        padding: 8px 18px;
+        border-radius: 12px;
+        background-color: #312E81;
+        border: 2px solid #818CF8;
+        color: #EEF2FF;
         display: inline-block;
+        text-align: center;
+        letter-spacing: 1px;
     }
     .timer-warning {
-        background-color: #FEF2F2 !important;
-        border: 1px solid #EF4444 !important;
-        color: #DC2626 !important;
-        animation: pulse 1.5s infinite;
+        background-color: #7F1D1D !important;
+        border: 2px solid #F87171 !important;
+        color: #FEF2F2 !important;
+        animation: pulse 1s infinite alternate;
+    }
+    @keyframes pulse {
+        0% { transform: scale(1); }
+        100% { transform: scale(1.04); }
     }
 </style>
 """, unsafe_allow_html=True)
