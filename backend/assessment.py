@@ -147,45 +147,53 @@ def ask_qwen(prompt: str, as_json: bool = True) -> str:
     # 1. Cloud Groq AI (Superfast: ~1 second inference)
     groq_api_key = os.getenv("GROQ_API_KEY", "").strip()
     if groq_api_key:
-        groq_model = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
-        print(f"[GROQ AI] Calling {groq_model} (prompt_len={len(prompt)}, as_json={as_json})...", flush=True)
-        try:
-            t0 = time.time()
-            headers = {
-                "Authorization": f"Bearer {groq_api_key}",
-                "Content-Type": "application/json"
-            }
-            body = {
-                "model": groq_model,
-                "messages": [
-                    {"role": "system", "content": "You are an expert educational assessment generator. Follow instructions exactly and output valid JSON when requested."},
-                    {"role": "user", "content": prompt}
-                ],
-                "temperature": 0.2
-            }
-            if as_json:
-                body["response_format"] = {"type": "json_object"}
+        preferred_model = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
+        models_to_try = [preferred_model, "llama-3.1-8b-instant", "llama-3.2-3b-preview", "llama3-8b-8192"]
+        # Deduplicate while preserving order
+        models_to_try = list(dict.fromkeys(models_to_try))
 
-            resp = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=body, timeout=45)
-            if resp.status_code == 200:
-                data = resp.json()
-                content = data["choices"][0]["message"]["content"].strip()
-                elapsed = time.time() - t0
-                print(f"[GROQ AI] Response received in {elapsed:.2f}s", flush=True)
-                return content
-            else:
-                err_msg = resp.text
-                try:
-                    err_msg = resp.json().get("error", {}).get("message", resp.text)
-                except Exception:
-                    pass
-                print(f"[GROQ AI WARNING] HTTP {resp.status_code}: {err_msg}", flush=True)
-                raise HTTPException(502, f"Groq Cloud AI error ({resp.status_code}): {err_msg}")
-        except HTTPException:
-            raise
-        except Exception as e:
-            print(f"[GROQ AI ERROR] Failed: {e}", flush=True)
-            raise HTTPException(502, f"Groq Cloud AI connection error: {str(e)}")
+        last_groq_err = None
+        for groq_model in models_to_try:
+            print(f"[GROQ AI] Calling {groq_model} (prompt_len={len(prompt)}, as_json={as_json})...", flush=True)
+            try:
+                t0 = time.time()
+                headers = {
+                    "Authorization": f"Bearer {groq_api_key}",
+                    "Content-Type": "application/json"
+                }
+                body = {
+                    "model": groq_model,
+                    "messages": [
+                        {"role": "system", "content": "You are an expert educational assessment generator. Follow instructions exactly and output valid JSON when requested."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    "temperature": 0.2
+                }
+                if as_json:
+                    body["response_format"] = {"type": "json_object"}
+
+                resp = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=body, timeout=45)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    content = data["choices"][0]["message"]["content"].strip()
+                    elapsed = time.time() - t0
+                    print(f"[GROQ AI] Model {groq_model} responded in {elapsed:.2f}s!", flush=True)
+                    return content
+                elif resp.status_code == 404:
+                    print(f"[GROQ AI] Model {groq_model} not found (404), trying next model in list...", flush=True)
+                    continue
+                else:
+                    err_msg = resp.text
+                    try:
+                        err_msg = resp.json().get("error", {}).get("message", resp.text)
+                    except Exception:
+                        pass
+                    last_groq_err = f"Groq Cloud AI error ({resp.status_code}): {err_msg}"
+            except Exception as e:
+                last_groq_err = f"Groq Cloud AI connection error: {str(e)}"
+
+        if last_groq_err:
+            raise HTTPException(502, last_groq_err)
 
     # 2. Cloud Google Gemini API
     gemini_key = os.getenv("GEMINI_API_KEY", "").strip()
