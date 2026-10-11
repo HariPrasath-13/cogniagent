@@ -173,16 +173,31 @@ This code will expire in 5 minutes. If you did not request this code, you can sa
     msg.attach(MIMEText(body_text, "plain"))
     msg.attach(MIMEText(body_html, "html"))
 
+    delivery_err = ""
+    # Attempt 1: Port 587 (STARTTLS)
     try:
-        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=10) as server:
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=6) as server:
             server.starttls()
             server.login(SENDER_EMAIL, SENDER_APP_PASSWORD)
             server.sendmail(SENDER_EMAIL, recipient_email, msg.as_string())
         return True, "Email sent successfully"
-    except smtplib.SMTPAuthenticationError:
-        return False, "Gmail authentication failed. Ensure you are using a 16-character Gmail App Password with 2-Step Verification enabled on fakeharish13@gmail.com."
     except Exception as e:
-        return False, f"Email delivery failed: {str(e)}"
+        delivery_err = str(e)
+        print(f"[AUTH SMTP] Port 587 attempt failed: {e}. Trying SSL port 465...", flush=True)
+
+    # Attempt 2: Port 465 (Direct SSL)
+    try:
+        with smtplib.SMTP_SSL(SMTP_HOST, 465, timeout=6) as server:
+            server.login(SENDER_EMAIL, SENDER_APP_PASSWORD)
+            server.sendmail(SENDER_EMAIL, recipient_email, msg.as_string())
+        return True, "Email sent successfully via SSL (465)"
+    except Exception as e:
+        delivery_err = str(e)
+        print(f"[AUTH SMTP] Port 465 attempt failed: {e}", flush=True)
+
+    # Fallback: Cloud hosting (e.g. Render Free) blocks outbound SMTP ports
+    print(f"[AUTH OTP CODE] Verification code for {recipient_email}: {otp_code}", flush=True)
+    return False, f"Cloud firewall blocked outbound SMTP ({delivery_err}). Your verification code is: {otp_code}"
 
 from fastapi.openapi.docs import get_swagger_ui_html
 
