@@ -272,6 +272,40 @@ def root():
     return {"status": "ok", "service": "CogniAgent API", "version": "1.0.0"}
 
 
+@app.get("/api/debug-ai", tags=["Health"])
+def debug_ai():
+    groq_key = os.getenv("GROQ_API_KEY", "").strip()
+    resend_key = os.getenv("RESEND_API_KEY", "").strip()
+
+    groq_test = "No key"
+    if groq_key:
+        try:
+            r = requests.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={"Authorization": f"Bearer {groq_key}", "Content-Type": "application/json"},
+                json={
+                    "model": "llama-3.1-8b-instant",
+                    "messages": [
+                        {"role": "system", "content": "You are a helpful assistant."},
+                        {"role": "user", "content": "ping"}
+                    ],
+                    "temperature": 0.1
+                },
+                timeout=10
+            )
+            groq_test = {"status_code": r.status_code, "body": r.json() if r.status_code == 200 else r.text[:250]}
+        except Exception as e:
+            groq_test = f"Exception: {str(e)}"
+
+    return {
+        "groq_key_configured": bool(groq_key),
+        "groq_key_preview": (groq_key[:7] + "..." + groq_key[-4:]) if len(groq_key) > 11 else "invalid_length",
+        "groq_test": groq_test,
+        "resend_key_configured": bool(resend_key)
+    }
+
+
+
 
 
 @app.get("/docs", include_in_schema=False)
