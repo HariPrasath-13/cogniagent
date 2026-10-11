@@ -113,49 +113,73 @@ def init_db():
 
 
 
-# ---------- LOCAL QWEN MODEL RESOLUTION & CALL ----------
+# ---------- CLOUD GROQ & LLM MODEL RESOLUTION & INFERENCE ----------
 
-def get_effective_model() -> str:
+_GROQ_MODELS_CACHE = {"timestamp": 0, "models": []}
+
+
+def get_groq_models(api_key: str) -> list[str]:
     """
-    Checks configured model (defaults to qwen2.5:3b).
-    If another Qwen model is available locally in Ollama, selects the best matching model.
+    Discovers available models on the Groq account dynamically.
+    Caches results for 5 minutes.
+    Prioritizes ultra-fast high-parameter models: gpt-oss-120b, qwen3.8-27b, gpt-oss-20b.
     """
-    target = DEFAULT_MODEL_NAME
+    now = time.time()
+    if _GROQ_MODELS_CACHE["models"] and (now - _GROQ_MODELS_CACHE["timestamp"] < 300):
+        return _GROQ_MODELS_CACHE["models"]
+
+    preferred_priority = [
+        "openai/gpt-oss-120b",
+        "qwen/qwen3.8-27b",
+        "openai/gpt-oss-20b",
+        "llama-3.3-70b-versatile",
+        "llama-3.1-8b-instant",
+        "mixtral-8x7b-32768"
+    ]
+
     try:
-        tags_resp = requests.get("http://127.0.0.1:11434/api/tags", timeout=2)
-        if tags_resp.ok:
-            available = [m.get("name", "") for m in tags_resp.json().get("models", [])]
-            # Exact match
-            if target in available:
-                return target
-            # Prefix match e.g. qwen2.5:3b-instruct vs qwen2.5:3b
-            for m in available:
-                if m.startswith(target) or target.startswith(m):
-                    return m
-            # If target not yet ready, use installed qwen variant if available
-            for m in available:
-                if "qwen" in m.lower():
-                    return m
-            if available:
-                return available[0]
-    except Exception:
-        pass
-    return target
+        resp = requests.get(
+            "https://api.groq.com/openai/v1/models",
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=5
+        )
+        if resp.status_code == 200:
+            available_ids = {m.get("id") for m in resp.json().get("data", []) if m.get("id")}
+            # Match in preferred order
+            selected = [m for m in preferred_priority if m in available_ids]
+            # Add any remaining chat-capable models
+            for mid in available_ids:
+                if mid not in selected and not any(skip in mid for skip in ["whisper", "guard", "safeguard", "orpheus"]):
+                    selected.append(mid)
+
+            if selected:
+                _GROQ_MODELS_CACHE["models"] = selected
+                _GROQ_MODELS_CACHE["timestamp"] = now
+                print(f"[GROQ AI] Active available models: {selected}", flush=True)
+                return selected
+    except Exception as ex:
+        print(f"[GROQ AI] Warning: Could not fetch models list: {ex}", flush=True)
+
+    return preferred_priority
 
 
 def ask_qwen(prompt: str, as_json: bool = True) -> str:
-    # 1. Cloud Groq AI (Superfast: ~1 second inference)
+    """
+    Executes fast cloud inference via Groq API.
+    Falls back gracefully across discovered models and Gemini if available.
+    """
+    # 1. Cloud Groq AI (Superfast: ~0.8s - 1.3s inference)
     groq_api_key = os.getenv("GROQ_API_KEY", "").strip()
     if groq_api_key:
-        active_models = ["llama-3.1-8b-instant", "llama-3.3-70b-versatile", "mixtral-8x7b-32768"]
+        active_models = get_groq_models(groq_api_key)
         headers = {
             "Authorization": f"Bearer {groq_api_key}",
             "Content-Type": "application/json"
         }
 
         for groq_model in active_models:
-            # Try with and without json_object response_format to prevent 400 schema errors
-            for try_json_format in [True, False]:
+            attempts = [True, False] if as_json else [False]
+            for try_json_format in attempts:
                 try:
                     t0 = time.time()
                     body = {
@@ -163,7 +187,12 @@ def ask_qwen(prompt: str, as_json: bool = True) -> str:
                         "messages": [
                             {
                                 "role": "system",
-                                "content": "You are an expert assessment generator. You must return valid JSON matching the requested structure."
+                                "content": (
+                                    "You are an expert educational assessment generator. "
+                                    "Return only valid, well-formed JSON matching the requested structure."
+                                    if as_json else
+                                    "You are a helpful, knowledgeable academic tutor."
+                                )
                             },
                             {"role": "user", "content": prompt}
                         ],
@@ -172,23 +201,28 @@ def ask_qwen(prompt: str, as_json: bool = True) -> str:
                     if try_json_format:
                         body["response_format"] = {"type": "json_object"}
 
-                    resp = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=body, timeout=30)
+                    resp = requests.post(
+                        "https://api.groq.com/openai/v1/chat/completions",
+                        headers=headers,
+                        json=body,
+                        timeout=35
+                    )
                     if resp.status_code == 200:
                         content = resp.json()["choices"][0]["message"]["content"].strip()
                         elapsed = time.time() - t0
                         print(f"[GROQ AI] Success with {groq_model} in {elapsed:.2f}s!", flush=True)
                         return content
                     elif resp.status_code == 400 and try_json_format:
-                        # Retry this same model without response_format
+                        # Retry model without response_format constraint
                         continue
                     else:
-                        print(f"[GROQ AI] Model {groq_model} returned {resp.status_code}, trying next...", flush=True)
+                        print(f"[GROQ AI] Model {groq_model} returned {resp.status_code}: {resp.text[:120]}, trying next...", flush=True)
                         break
                 except Exception as ex:
                     print(f"[GROQ AI] Model {groq_model} exception: {ex}", flush=True)
                     break
 
-    # 2. Cloud Google Gemini API
+    # 2. Cloud Google Gemini API (Fallback)
     gemini_key = os.getenv("GEMINI_API_KEY", "").strip()
     if gemini_key:
         try:
@@ -211,6 +245,7 @@ def ask_qwen(prompt: str, as_json: bool = True) -> str:
             print(f"[GEMINI AI ERROR] Failed: {e}", flush=True)
 
     raise RuntimeError("Cloud AI services unavailable or model error.")
+
 
 
 def generate_fallback_questions(
@@ -328,6 +363,8 @@ def generate_fallback_questions(
 
 def parse_model_json(text: str):
     text = text.strip()
+    # Normalize fancy unicode quotes and dashes
+    text = text.replace('\u2011', '-').replace('\u2013', '-').replace('\u2014', '-').replace('\u2018', "'").replace('\u2019', "'").replace('\u201c', '"').replace('\u201d', '"')
     # Strip any <think> ... </think> tags
     text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
     if text.startswith("```"):
@@ -408,16 +445,21 @@ async def read_pdf(file: UploadFile) -> str:
                 400, f"PDF exceeds the maximum limit of {MAX_PAGES} pages."
             )
 
-        text = "\n".join(
-            page.extract_text() or ""
-            for page in reader.pages
-        )
+        pages_text = []
+        for page in reader.pages:
+            t = (page.extract_text() or "").strip()
+            if t:
+                pages_text.append(t)
+        raw_text = "\n\n".join(pages_text)
     except HTTPException:
         raise
     except Exception:
         raise HTTPException(400, "Unable to read this PDF file. The file may be corrupted.")
 
-    text = re.sub(r"\s+", " ", text).strip()
+    # Clean whitespace while preserving line structure
+    text = raw_text.replace("\r\n", "\n").replace("\r", "\n")
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
 
     if len(text) < 200:
         raise HTTPException(
@@ -445,20 +487,24 @@ def generate_questions(
     if diff not in ("easy", "medium", "hard"):
         diff = "medium"
 
-    # Smart representative context extraction:
-    # Sampling informative paragraphs up to 3,500 characters keeps CPU prompt eval to ~15-20 seconds.
-    if len(text) <= 3500:
-        source = text
-    else:
-        paras = [p.strip() for p in text.split("\n") if len(p.strip()) > 30]
-        selected = []
-        curr_len = 0
-        for p in paras:
-            if curr_len + len(p) > 3500:
-                break
-            selected.append(p)
-            curr_len += len(p)
-        source = "\n\n".join(selected) if selected else text[:3500]
+    # Clean text to remove presentation headers, course codes, and slide metadata
+    clean_lines = []
+    for line in text.split("\n"):
+        line_clean = line.strip()
+        if not line_clean:
+            continue
+        line_lower = line_clean.lower()
+        if any(ign in line_lower for ign in [
+            "lecture material", "course code", "syllabus", "prepared by",
+            "department of", "page ", "approved by", "academic year"
+        ]):
+            continue
+        if re.match(r"^(?:unit\s+[ivx0-9]+|slide\s+\d+|[0-9]+\s*$)", line_lower):
+            continue
+        clean_lines.append(line_clean)
+
+    filtered_text = "\n".join(clean_lines) if clean_lines else text
+    source = filtered_text[:6000] if len(filtered_text) > 6000 else filtered_text
 
     diff_guidelines = {
         "easy": "DIFFICULTY LEVEL: EASY. Test foundational definitions, explicit facts, direct recall, and straightforward concepts explicitly stated in the source text.",
@@ -470,23 +516,25 @@ def generate_questions(
     if q_type == "mcq":
         prompt = f"""You are an educational assessment generator.
 
-Create exactly {count} multiple-choice questions (MCQs) based ONLY on the source text below.
+Create exactly {count} multiple-choice questions (MCQs) based ONLY on the conceptual content in the source text below.
 {diff_instruction}
 
 STRICT REQUIREMENTS FOR EACH MCQ:
-- Provide 4 distinct options formatted as ["A) Option 1", "B) Option 2", "C) Option 3", "D) Option 4"].
-- Exactly ONE option must be correct. The remaining three must be plausible distractors grounded in the topic.
+- Focus on key concepts, mechanisms, definitions, and functions explained in the material.
+- NEVER create questions about slide numbers, course codes, lecture metadata, or document headings.
+- Provide 4 distinct, plausible options formatted as ["A) Option 1", "B) Option 2", "C) Option 3", "D) Option 4"].
+- Exactly ONE option must be correct. The other three options must be realistic, plausible distractors from the same subject domain.
 - "correct_answer" MUST be the single uppercase letter: "A", "B", "C", or "D".
-- "explanation" must concisely explain why the correct option is right based on the source text (1-2 sentences).
+- "explanation" must clearly explain why the correct option is right based on the material (1-2 sentences).
 
 Return valid JSON in this exact structure:
 {{
   "questions": [
     {{
-      "question": "Clear question directly answerable from the source?",
+      "question": "Clear, specific question about a concept from the text?",
       "options": ["A) ...", "B) ...", "C) ...", "D) ..."],
       "correct_answer": "A",
-      "explanation": "Why this answer is correct."
+      "explanation": "Why this option is correct based on the text."
     }}
   ]
 }}
@@ -501,6 +549,8 @@ Create exactly {count} descriptive assessment questions based ONLY on the source
 {diff_instruction}
 
 STRICT REQUIREMENTS:
+- Focus on key concepts, mechanisms, definitions, and functions explained in the material.
+- NEVER ask about slide numbers, course codes, or lecture metadata.
 - Clear descriptive question requiring a thoughtful typed response.
 - "reference_answer": Concise expected answer supported by the source text (1-2 sentences).
 - "rubric": 2 to 4 key grading points/criteria (3-8 words each).
@@ -539,6 +589,8 @@ Create a balanced MIXED assessment with exactly {count} total questions: {mcq_co
 {diff_instruction}
 
 STRICT REQUIREMENTS:
+- Focus on key concepts, mechanisms, definitions, and functions explained in the material.
+- NEVER ask about slide numbers, course codes, or lecture metadata.
 - The first {mcq_count} questions must be "type": "mcq" with 4 options ["A) ...", "B) ...", "C) ...", "D) ..."], "correct_answer" ("A", "B", "C", or "D"), and "explanation".
 - The remaining {qa_count} questions must be "type": "question_answer" with a "reference_answer" and a "rubric".
 
@@ -598,26 +650,38 @@ SOURCE TEXT:
         is_mcq = (q_type == "mcq") or (item_type == "mcq") or (isinstance(options, list) and len(options) >= 2)
 
         if is_mcq:
-            opts = options if isinstance(options, list) else []
-            if len(opts) < 4:
-                # Ensure 4 options exist
+            raw_opts = options if isinstance(options, list) else []
+            if len(raw_opts) < 4:
                 defaults = ["Option A", "Option B", "Option C", "Option D"]
-                opts = opts + defaults[len(opts):]
-            opts = [str(o)[:200] for o in opts[:4]]
+                raw_opts = raw_opts + defaults[len(raw_opts):]
 
-            corr = str(item.get("correct_answer", "A")).strip().upper()
-            if corr and corr[0] in ("A", "B", "C", "D"):
-                corr = corr[0]
+            # Format options cleanly with consistent A), B), C), D) prefixes
+            clean_opts = []
+            for idx_o, o in enumerate(raw_opts[:4]):
+                prefix = ["A) ", "B) ", "C) ", "D) "][idx_o]
+                o_str = str(o).strip()
+                o_clean = re.sub(r'^(?:[A-D][\)\.]|\([A-D]\))\s*', '', o_str).strip()
+                clean_opts.append(f"{prefix}{o_clean}")
+
+            # Resolve correct answer letter
+            corr_input = str(item.get("correct_answer", item.get("answer", "A"))).strip()
+            corr_letter = "A"
+            if corr_input and corr_input[0].upper() in ("A", "B", "C", "D") and len(corr_input) <= 3:
+                corr_letter = corr_input[0].upper()
             else:
-                corr = "A"
+                for idx_o, o in enumerate(raw_opts[:4]):
+                    o_clean = re.sub(r'^(?:[A-D][\)\.]|\([A-D]\))\s*', '', str(o)).strip()
+                    if corr_input.lower() == o_clean.lower():
+                        corr_letter = ["A", "B", "C", "D"][idx_o]
+                        break
 
             explanation = str(item.get("explanation", "")).strip()
             seen.add(q_text.lower())
             questions.append({
                 "type": "mcq",
                 "question": q_text,
-                "options": opts,
-                "correct_answer": corr,
+                "options": clean_opts,
+                "correct_answer": corr_letter,
                 "explanation": explanation or "Correct answer based on the uploaded document.",
                 "max_marks": 10
             })

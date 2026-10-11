@@ -280,11 +280,25 @@ def debug_ai():
     groq_test = "No key"
     if groq_key:
         try:
+            r_models = requests.get(
+                "https://api.groq.com/openai/v1/models",
+                headers={"Authorization": f"Bearer {groq_key}"},
+                timeout=5
+            )
+            available = [m.get("id") for m in r_models.json().get("data", [])] if r_models.status_code == 200 else []
+            # Choose best available model
+            preferred = ["openai/gpt-oss-120b", "qwen/qwen3.8-27b", "openai/gpt-oss-20b", "llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
+            test_model = "openai/gpt-oss-120b"
+            for p in preferred:
+                if p in available:
+                    test_model = p
+                    break
+
             r = requests.post(
                 "https://api.groq.com/openai/v1/chat/completions",
                 headers={"Authorization": f"Bearer {groq_key}", "Content-Type": "application/json"},
                 json={
-                    "model": "llama-3.1-8b-instant",
+                    "model": test_model,
                     "messages": [
                         {"role": "system", "content": "You are a helpful assistant."},
                         {"role": "user", "content": "ping"}
@@ -293,7 +307,12 @@ def debug_ai():
                 },
                 timeout=10
             )
-            groq_test = {"status_code": r.status_code, "body": r.json() if r.status_code == 200 else r.text[:250]}
+            groq_test = {
+                "tested_model": test_model,
+                "status_code": r.status_code,
+                "available_models": available,
+                "body": r.json() if r.status_code == 200 else r.text[:250]
+            }
         except Exception as e:
             groq_test = f"Exception: {str(e)}"
 
