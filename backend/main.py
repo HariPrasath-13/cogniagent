@@ -39,7 +39,24 @@ SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com")
 SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
 RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
 RESEND_FROM_EMAIL = os.getenv("RESEND_FROM_EMAIL", "CogniAgent <onboarding@resend.dev>")
+GMAIL_GATEWAY_URL = os.getenv("GMAIL_GATEWAY_URL", "")
+GMAIL_GATEWAY_SECRET = os.getenv("GMAIL_GATEWAY_SECRET", "")
+MAX_DAILY_EMAILS = int(os.getenv("MAX_DAILY_EMAILS", "90"))
+ENABLE_LOCAL_SMTP_DEBUG = os.getenv("ENABLE_LOCAL_SMTP_DEBUG", "false").lower() in ("true", "1")
 DATABASE_PATH = os.path.join(os.path.dirname(__file__), os.getenv("DATABASE_PATH", "auth.db"))
+
+_EMAIL_DISPATCH_LOG: list[float] = []
+
+def mask_email(email: str) -> str:
+    try:
+        user, domain = email.strip().split("@", 1)
+        if len(user) <= 2:
+            masked_user = user[0] + "*"
+        else:
+            masked_user = user[0] + "*" * (len(user) - 2) + user[-1]
+        return f"{masked_user}@{domain}"
+    except Exception:
+        return "***"
 
 
 OTP_EXPIRY_SECONDS = 300  # 5 minutes
@@ -136,13 +153,31 @@ def create_session_token(user_id: str, email: str) -> str:
 # ----------------- Email Delivery Helper -----------------
 def send_email_otp(recipient_email: str, otp_code: str, purpose: str = "Verification") -> tuple[bool, str]:
     """
-    Delivers OTP code to recipient via configured email providers.
+    Delivers OTP code to recipient via transactional HTTPS email providers.
     Order of preference:
-      1. Resend HTTP API (if RESEND_API_KEY is configured)
-      2. Gmail SMTP via STARTTLS/SSL (if SENDER_APP_PASSWORD and SENDER_EMAIL are configured)
-    Returns (True, message) on success, or (False, safe_error_message) on failure.
-    Security: NEVER returns the OTP in failure messages.
+      1. Google Apps Script Web App Gateway (Port 443 HTTPS - Primary, zero-cost, no-domain)
+      2. Resend Transactional HTTPS API (Port 443 HTTPS - Fallback if verified domain configured)
+      3. Local SMTP (Offline development only if ENABLE_LOCAL_SMTP_DEBUG is True)
+
+    Security & Privacy:
+      - NEVER returns or logs OTP codes or gateway secrets.
+      - Masks recipient email addresses in server logs.
+      - Enforces recipient input validation and rolling daily dispatch rate limits.
     """
+    # 1. Recipient Input Validation
+    if not recipient_email or not isinstance(recipient_email, str):
+        return False, "Invalid recipient email address."
+    clean_email = recipient_email.strip().lower()
+    if len(clean_email) > 254 or "@" not in clean_email or "." not in clean_email:
+        return False, "Invalid recipient email address format."
+
+    # 2. Daily Dispatch Rate Limiting (Protects free quota from abuse)
+    now = time.time()
+    _EMAIL_DISPATCH_LOG[:] = [t for t in _EMAIL_DISPATCH_LOG if now - t < 86400]
+    if len(_EMAIL_DISPATCH_LOG) >= MAX_DAILY_EMAILS:
+        print(f"[AUTH RATE LIMIT] Daily email dispatch limit of {MAX_DAILY_EMAILS} reached. Throttling outbound requests.", flush=True)
+        return False, "Daily email limit reached. Please try again tomorrow or contact support."
+
     subject = f"Your CogniAgent {purpose} Code"
     body_text = f"""Hello,
 
@@ -173,13 +208,71 @@ This code will expire in 5 minutes. If you did not request this code, you can sa
 
     delivery_errors = []
 
-    # Priority 1: Resend HTTP API (Independent of SMTP password)
+    # -------------------------------------------------------------
+    # Priority 1 (Primary): Google Apps Script Web App Gateway
+    # -------------------------------------------------------------
+    if GMAIL_GATEWAY_URL and GMAIL_GATEWAY_URL.strip():
+        gateway_url = GMAIL_GATEWAY_URL.strip()
+        gateway_secret = GMAIL_GATEWAY_SECRET.strip() if GMAIL_GATEWAY_SECRET else ""
+        gateway_payload = {
+            "secret": gateway_secret,
+            "to": clean_email,
+            "subject": subject,
+            "html": body_html,
+            "text": body_text
+        }
+        try:
+            # Google Apps Script redirects 302 to script.googleusercontent.com
+            resp = requests.post(
+                gateway_url,
+                json=gateway_payload,
+                headers={"Content-Type": "application/json"},
+                allow_redirects=True,
+                timeout=10
+            )
+
+            # Handle manual 302 redirect if not automatically resolved
+            if resp.status_code == 302 and resp.headers.get("Location"):
+                resp = requests.get(resp.headers["Location"], timeout=10)
+
+            if resp.status_code == 200:
+                try:
+                    data = resp.json()
+                except Exception:
+                    data = {}
+
+                # Strict validation: Do not claim success on HTTP 200 alone
+                if data.get("success") is True or data.get("status") == "success":
+                    _EMAIL_DISPATCH_LOG.append(now)
+                    print(f"[AUTH GATEWAY] Verification email dispatched to {mask_email(clean_email)} via Apps Script Gateway", flush=True)
+                    return True, "Verification email delivered to your inbox."
+                else:
+                    err_msg = data.get("error") or data.get("message") or "Gateway reported delivery failure"
+                    print(f"[AUTH GATEWAY WARNING] Gateway rejected dispatch: {err_msg}", flush=True)
+                    delivery_errors.append(f"Apps Script Gateway: {err_msg}")
+            else:
+                print(f"[AUTH GATEWAY ERROR] Gateway HTTP status {resp.status_code}", flush=True)
+                delivery_errors.append(f"Apps Script Gateway HTTP {resp.status_code}")
+        except requests.exceptions.Timeout:
+            print(f"[AUTH GATEWAY TIMEOUT] Gateway request timed out after 10s", flush=True)
+            delivery_errors.append("Apps Script Gateway timed out")
+        except Exception as gex:
+            print(f"[AUTH GATEWAY ERROR] Connection error: {str(gex)}", flush=True)
+            delivery_errors.append("Apps Script Gateway connection error")
+    else:
+        print("[AUTH DIAGNOSTIC] GMAIL_GATEWAY_URL is not set; skipping Google Apps Script gateway.", flush=True)
+        delivery_errors.append("GMAIL_GATEWAY_URL not set")
+
+    # -------------------------------------------------------------
+    # Priority 2 (Fallback): Resend Transactional HTTPS API
+    # -------------------------------------------------------------
     if RESEND_API_KEY and RESEND_API_KEY.strip():
+        sender_address = RESEND_FROM_EMAIL.strip() if RESEND_FROM_EMAIL and RESEND_FROM_EMAIL.strip() else "CogniAgent <onboarding@resend.dev>"
         try:
             resend_payload = {
-                "from": RESEND_FROM_EMAIL or f"CogniAgent <onboarding@resend.dev>",
-                "to": [recipient_email],
-                "subject": f"Your CogniAgent {purpose} Code: {otp_code}",
+                "from": sender_address,
+                "to": [clean_email],
+                "subject": subject,
                 "html": body_html,
                 "text": body_text
             }
@@ -193,52 +286,68 @@ This code will expire in 5 minutes. If you did not request this code, you can sa
                 timeout=8
             )
             if resp.status_code in (200, 201):
-                print(f"[AUTH RESEND] OTP email dispatched to {recipient_email} via Resend", flush=True)
+                _EMAIL_DISPATCH_LOG.append(now)
+                print(f"[AUTH RESEND] OTP email dispatched to {mask_email(clean_email)} via Resend HTTPS API", flush=True)
                 return True, "Verification email delivered to your inbox."
             else:
                 err_data = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
                 err_msg = err_data.get("message", resp.text)
-                print(f"[AUTH RESEND WARNING] HTTP {resp.status_code}: {err_msg}", flush=True)
-                delivery_errors.append(f"Resend HTTP {resp.status_code}: {err_msg}")
+                if resp.status_code == 403:
+                    print(f"[AUTH RESEND 403] Resend sandbox restriction: Sending to external recipient blocked without verified domain.", flush=True)
+                    delivery_errors.append("Resend sandbox restriction (HTTP 403): external recipient not permitted")
+                elif resp.status_code == 401:
+                    print(f"[AUTH RESEND 401] Unauthorized: RESEND_API_KEY is invalid.", flush=True)
+                    delivery_errors.append("Resend HTTP 401: Invalid API key")
+                elif resp.status_code == 422:
+                    print(f"[AUTH RESEND 422] Unprocessable Entity: Sender or domain unverified on Resend.", flush=True)
+                    delivery_errors.append(f"Resend HTTP 422: Unverified sender domain")
+                else:
+                    print(f"[AUTH RESEND WARNING] HTTP {resp.status_code}: {err_msg}", flush=True)
+                    delivery_errors.append(f"Resend HTTP {resp.status_code}")
+        except requests.exceptions.Timeout:
+            print(f"[AUTH RESEND TIMEOUT] Resend request timed out after 8s", flush=True)
+            delivery_errors.append("Resend API timed out")
         except Exception as rex:
-            print(f"[AUTH RESEND ERROR] {rex}", flush=True)
-            delivery_errors.append(f"Resend request error: {str(rex)}")
+            print(f"[AUTH RESEND ERROR] Connection error: {rex}", flush=True)
+            delivery_errors.append("Resend connection error")
 
-    # Priority 2: Direct SMTP (Gmail)
-    if SENDER_APP_PASSWORD and SENDER_APP_PASSWORD.strip() and SENDER_EMAIL and SENDER_EMAIL.strip():
+    # -------------------------------------------------------------
+    # Priority 3 (Local Offline Dev Only): Direct SMTP
+    # -------------------------------------------------------------
+    if ENABLE_LOCAL_SMTP_DEBUG and SENDER_APP_PASSWORD and SENDER_APP_PASSWORD.strip() and SENDER_EMAIL and SENDER_EMAIL.strip():
         msg = MIMEMultipart("alternative")
-        msg["Subject"] = f"Your CogniAgent {purpose} Code: {otp_code}"
+        msg["Subject"] = subject
         msg["From"] = f"CogniAgent <{SENDER_EMAIL}>"
-        msg["To"] = recipient_email
+        msg["To"] = clean_email
         msg.attach(MIMEText(body_text, "plain"))
         msg.attach(MIMEText(body_html, "html"))
 
         # Attempt: Port 587 (STARTTLS)
         try:
-            with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=6) as server:
+            with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=5) as server:
                 server.starttls()
                 server.login(SENDER_EMAIL, SENDER_APP_PASSWORD)
-                server.sendmail(SENDER_EMAIL, recipient_email, msg.as_string())
-            print(f"[AUTH SMTP] OTP email sent to {recipient_email} via SMTP (587)", flush=True)
+                server.sendmail(SENDER_EMAIL, clean_email, msg.as_string())
+            _EMAIL_DISPATCH_LOG.append(now)
+            print(f"[AUTH LOCAL SMTP] OTP email sent to {mask_email(clean_email)} via local SMTP (587)", flush=True)
             return True, "Verification email sent successfully."
         except Exception as e:
-            print(f"[AUTH SMTP] Port 587 failed: {e}. Trying SSL port 465...", flush=True)
-            delivery_errors.append(f"SMTP 587: {str(e)}")
+            delivery_errors.append(f"Local SMTP 587 error")
 
         # Attempt: Port 465 (Direct SSL)
         try:
-            with smtplib.SMTP_SSL(SMTP_HOST, 465, timeout=6) as server:
+            with smtplib.SMTP_SSL(SMTP_HOST, 465, timeout=5) as server:
                 server.login(SENDER_EMAIL, SENDER_APP_PASSWORD)
-                server.sendmail(SENDER_EMAIL, recipient_email, msg.as_string())
-            print(f"[AUTH SMTP] OTP email sent to {recipient_email} via SSL (465)", flush=True)
+                server.sendmail(SENDER_EMAIL, clean_email, msg.as_string())
+            _EMAIL_DISPATCH_LOG.append(now)
+            print(f"[AUTH LOCAL SMTP] OTP email sent to {mask_email(clean_email)} via local SSL (465)", flush=True)
             return True, "Verification email sent successfully via SSL (465)."
         except Exception as e:
-            print(f"[AUTH SMTP ERROR] Port 465 failed: {e}", flush=True)
-            delivery_errors.append(f"SMTP 465: {str(e)}")
+            delivery_errors.append(f"Local SMTP 465 error")
 
-    # Failure: Log diagnostic server-side only; NEVER expose the OTP code to client
-    err_summary = "; ".join(delivery_errors) if delivery_errors else "No email provider configured"
-    print(f"[AUTH EMAIL FAILED] Could not send OTP to {recipient_email}. Reason: {err_summary}", flush=True)
+    # Failure: Log non-sensitive diagnostic server-side only; NEVER expose OTP code or secrets
+    err_summary = "; ".join(delivery_errors) if delivery_errors else "No email provider available"
+    print(f"[AUTH EMAIL FAILED] Could not send OTP to {mask_email(clean_email)}. Diagnostic: {err_summary}", flush=True)
     return False, "Unable to deliver email verification code. Please check your email configuration or click resend."
 
 from fastapi.openapi.docs import get_swagger_ui_html
@@ -379,14 +488,15 @@ class ResendOtpRequest(BaseModel):
 
 @app.get("/health")
 def health_check():
-    has_app_password = bool(SENDER_APP_PASSWORD and SENDER_APP_PASSWORD.strip())
+    has_gateway = bool(GMAIL_GATEWAY_URL and GMAIL_GATEWAY_URL.strip())
+    has_gateway_secret = bool(GMAIL_GATEWAY_SECRET and GMAIL_GATEWAY_SECRET.strip())
     has_resend = bool(RESEND_API_KEY and RESEND_API_KEY.strip())
-    is_ready = has_resend or has_app_password
+    is_ready = has_gateway or has_resend
     return {
         "status": "healthy",
         "service": "CogniAgent Authentication Backend",
-        "authorized_sender": SENDER_EMAIL,
-        "smtp_configured": has_app_password,
+        "gateway_configured": has_gateway,
+        "gateway_secret_configured": has_gateway_secret,
         "resend_configured": has_resend,
         "message": (
             "Backend is running. Email delivery is configured."
@@ -458,18 +568,26 @@ def register_user(req: RegisterRequest):
         """,
         (email, otp_code, expires_at, now)
     )
+
+    # Send email before committing transaction to database
+    email_sent, email_msg = send_email_otp(email, otp_code, purpose="Registration Verification")
+
+    if not email_sent:
+        conn.rollback()
+        conn.close()
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Unable to deliver verification email. Please check your email configuration or try again shortly."
+        )
+
     conn.commit()
     conn.close()
 
-    # Send email
-    email_sent, email_msg = send_email_otp(email, otp_code, purpose="Registration Verification")
-
     return {
         "success": True,
-        "message": f"Verification code sent to {email}." if email_sent else "Account created, but verification email could not be delivered. Please click resend.",
+        "message": f"Verification code sent to {email}.",
         "email": email,
-        "email_sent": email_sent,
-        "delivery_notice": None if email_sent else "Verification email could not be delivered. Please verify your email address or click Resend."
+        "email_sent": True
     }
 
 @app.post("/verify-registration")
@@ -634,17 +752,26 @@ def send_login_otp(req: SendLoginOtpRequest):
         """,
         (email, otp_code, expires_at, now)
     )
+
+    # Send email before committing transaction
+    email_sent, email_msg = send_email_otp(email, otp_code, purpose="Sign-In")
+
+    if not email_sent:
+        conn.rollback()
+        conn.close()
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Unable to deliver login verification code. Please try again shortly."
+        )
+
     conn.commit()
     conn.close()
 
-    email_sent, email_msg = send_email_otp(email, otp_code, purpose="Sign-In")
-
     return {
         "success": True,
-        "message": f"Login code sent to {email}." if email_sent else "Login code generated, but email could not be delivered. Please click resend.",
+        "message": f"Login code sent to {email}.",
         "email": email,
-        "email_sent": email_sent,
-        "delivery_notice": None if email_sent else "Email could not be delivered. Please verify your connection or click Resend."
+        "email_sent": True
     }
 
 @app.post("/verify-login-otp")
@@ -934,15 +1061,25 @@ def resend_otp(req: ResendOtpRequest):
         """,
         (email, otp_code, otp_type, expires_at, now)
     )
+
+    # Send email before committing transaction
+    email_sent, email_msg = send_email_otp(email, otp_code, purpose="Verification")
+
+    if not email_sent:
+        conn.rollback()
+        conn.close()
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Unable to deliver verification code. Please try again shortly."
+        )
+
     conn.commit()
     conn.close()
 
-    email_sent, email_msg = send_email_otp(email, otp_code, purpose="Verification")
-
     return {
         "success": True,
-        "message": f"Verification code sent to {email}." if email_sent else "Code regenerated, but email could not be delivered. Please check email provider configuration.",
-        "email_sent": email_sent
+        "message": f"Verification code sent to {email}.",
+        "email_sent": True
     }
 
 # ----------------- Assessment Router -----------------
