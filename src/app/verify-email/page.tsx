@@ -9,6 +9,7 @@ import {
   verifyRegistration,
   verifyLoginOtp,
   sendLoginOtp,
+  resendOtp,
   saveSession,
 } from '@/lib/auth-api';
 
@@ -17,7 +18,6 @@ function VerifyEmailContent() {
   const searchParams = useSearchParams();
   const email = searchParams.get('email') || '';
   const mode = searchParams.get('mode') || 'registration';
-  const noticeParam = searchParams.get('notice') || '';
 
   const [otp, setOtp] = useState<string[]>(['', '', '', '', '', '']);
   const [secondsLeft, setSecondsLeft] = useState(60);
@@ -25,7 +25,6 @@ function VerifyEmailContent() {
   const [verified, setVerified] = useState(false);
   const [error, setError] = useState('');
   const [infoMessage, setInfoMessage] = useState('');
-  const [deliveryNotice, setDeliveryNotice] = useState(noticeParam);
   const inputRefs = useRef<(HTMLInputElement | null)[]>([]);
 
   useEffect(() => {
@@ -101,13 +100,15 @@ function VerifyEmailContent() {
       try {
         if (mode === 'login') {
           await sendLoginOtp(email);
+        } else {
+          await resendOtp(email, 'registration');
         }
         setSecondsLeft(60);
         setOtp(['', '', '', '', '', '']);
-        setInfoMessage('New verification code sent. Please check your inbox.');
+        setInfoMessage('A new verification code has been dispatched. Please check your inbox.');
         inputRefs.current[0]?.focus();
       } catch (err: any) {
-        setError(err.message || 'Failed to resend code.');
+        setError(err.message || 'Failed to resend code. Please try again.');
       }
     }
   };
@@ -129,16 +130,6 @@ function VerifyEmailContent() {
         We have sent a 6-digit verification code to{' '}
         <span className="font-semibold text-slate-700 dark:text-slate-200">{email || 'your email'}</span>
       </p>
-
-      {deliveryNotice && (
-        <div className="mb-5 p-3.5 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-300 text-xs text-left leading-relaxed">
-          <p className="font-bold flex items-center gap-1.5 mb-1">
-            <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
-            <span>Email Delivery Notice</span>
-          </p>
-          <p>{deliveryNotice}</p>
-        </div>
-      )}
 
       {error && (
         <div className="mb-5 p-3 rounded-xl bg-red-50 dark:bg-red-950/50 border border-red-200 dark:border-red-900 text-red-600 dark:text-red-400 text-xs flex items-center gap-2 text-left">

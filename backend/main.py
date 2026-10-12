@@ -135,13 +135,15 @@ def create_session_token(user_id: str, email: str) -> str:
 
 # ----------------- Email Delivery Helper -----------------
 def send_email_otp(recipient_email: str, otp_code: str, purpose: str = "Verification") -> tuple[bool, str]:
-    print(f"[COGNAGENT AUTH] Dispatched {purpose} OTP process for {recipient_email}", flush=True)
-
-    if not SENDER_APP_PASSWORD or not SENDER_APP_PASSWORD.strip():
-        return False, "SENDER_APP_PASSWORD is not configured. Please add your 16-character Gmail App Password to backend/.env."
-
-
-    subject = f"Your CogniAgent {purpose} Code: {otp_code}"
+    """
+    Delivers OTP code to recipient via configured email providers.
+    Order of preference:
+      1. Resend HTTP API (if RESEND_API_KEY is configured)
+      2. Gmail SMTP via STARTTLS/SSL (if SENDER_APP_PASSWORD and SENDER_EMAIL are configured)
+    Returns (True, message) on success, or (False, safe_error_message) on failure.
+    Security: NEVER returns the OTP in failure messages.
+    """
+    subject = f"Your CogniAgent {purpose} Code"
     body_text = f"""Hello,
 
 Your CogniAgent {purpose.lower()} code is:
@@ -169,73 +171,75 @@ This code will expire in 5 minutes. If you did not request this code, you can sa
 </body>
 </html>"""
 
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = subject
-    msg["From"] = f"CogniAgent <{SENDER_EMAIL}>"
-    msg["To"] = recipient_email
+    delivery_errors = []
 
-    msg.attach(MIMEText(body_text, "plain"))
-    msg.attach(MIMEText(body_html, "html"))
-
-    delivery_err = ""
-
-    # Priority 1: Resend HTTP API (Works on Render, Vercel, and all cloud hosts without SMTP firewall blocks)
+    # Priority 1: Resend HTTP API (Independent of SMTP password)
     if RESEND_API_KEY and RESEND_API_KEY.strip():
         try:
             resend_payload = {
-                "from": RESEND_FROM_EMAIL,
+                "from": RESEND_FROM_EMAIL or f"CogniAgent <onboarding@resend.dev>",
                 "to": [recipient_email],
-                "subject": subject,
+                "subject": f"Your CogniAgent {purpose} Code: {otp_code}",
                 "html": body_html,
                 "text": body_text
             }
             resp = requests.post(
                 "https://api.resend.com/emails",
                 headers={
-                    "Authorization": f"Bearer {RESEND_API_KEY}",
+                    "Authorization": f"Bearer {RESEND_API_KEY.strip()}",
                     "Content-Type": "application/json"
                 },
                 json=resend_payload,
                 timeout=8
             )
             if resp.status_code in (200, 201):
-                print(f"[AUTH RESEND] OTP email dispatched to {recipient_email} via Resend: {resp.text}", flush=True)
+                print(f"[AUTH RESEND] OTP email dispatched to {recipient_email} via Resend", flush=True)
                 return True, "Verification email delivered to your inbox."
             else:
                 err_data = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
                 err_msg = err_data.get("message", resp.text)
-                print(f"[AUTH RESEND WARNING] Resend HTTP {resp.status_code}: {err_msg}", flush=True)
-                delivery_err = f"Resend: {err_msg}"
+                print(f"[AUTH RESEND WARNING] HTTP {resp.status_code}: {err_msg}", flush=True)
+                delivery_errors.append(f"Resend HTTP {resp.status_code}: {err_msg}")
         except Exception as rex:
-            print(f"[AUTH RESEND EXCEPTION] {rex}", flush=True)
-            delivery_err = f"Resend request error: {str(rex)}"
+            print(f"[AUTH RESEND ERROR] {rex}", flush=True)
+            delivery_errors.append(f"Resend request error: {str(rex)}")
 
-    # Priority 2: Direct SMTP (Works on local networks or unrestricted clouds)
-    if SENDER_APP_PASSWORD and SENDER_APP_PASSWORD.strip():
+    # Priority 2: Direct SMTP (Gmail)
+    if SENDER_APP_PASSWORD and SENDER_APP_PASSWORD.strip() and SENDER_EMAIL and SENDER_EMAIL.strip():
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = f"Your CogniAgent {purpose} Code: {otp_code}"
+        msg["From"] = f"CogniAgent <{SENDER_EMAIL}>"
+        msg["To"] = recipient_email
+        msg.attach(MIMEText(body_text, "plain"))
+        msg.attach(MIMEText(body_html, "html"))
+
         # Attempt: Port 587 (STARTTLS)
         try:
             with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=6) as server:
                 server.starttls()
                 server.login(SENDER_EMAIL, SENDER_APP_PASSWORD)
                 server.sendmail(SENDER_EMAIL, recipient_email, msg.as_string())
-            return True, "Email sent successfully"
+            print(f"[AUTH SMTP] OTP email sent to {recipient_email} via SMTP (587)", flush=True)
+            return True, "Verification email sent successfully."
         except Exception as e:
-            delivery_err = str(e)
-            print(f"[AUTH SMTP] Port 587 attempt failed: {e}. Trying SSL port 465...", flush=True)
+            print(f"[AUTH SMTP] Port 587 failed: {e}. Trying SSL port 465...", flush=True)
+            delivery_errors.append(f"SMTP 587: {str(e)}")
 
         # Attempt: Port 465 (Direct SSL)
         try:
             with smtplib.SMTP_SSL(SMTP_HOST, 465, timeout=6) as server:
                 server.login(SENDER_EMAIL, SENDER_APP_PASSWORD)
                 server.sendmail(SENDER_EMAIL, recipient_email, msg.as_string())
-            return True, "Email sent successfully via SSL (465)"
+            print(f"[AUTH SMTP] OTP email sent to {recipient_email} via SSL (465)", flush=True)
+            return True, "Verification email sent successfully via SSL (465)."
         except Exception as e:
-            delivery_err = str(e)
-            print(f"[AUTH SMTP] Port 465 attempt failed: {e}", flush=True)
+            print(f"[AUTH SMTP ERROR] Port 465 failed: {e}", flush=True)
+            delivery_errors.append(f"SMTP 465: {str(e)}")
 
-    # Fallback: Safe display if all email methods are blocked
-    print(f"[AUTH OTP CODE] Verification code for {recipient_email}: {otp_code}", flush=True)
-    return False, f"Cloud firewall blocked outbound email ({delivery_err}). Your verification code is: {otp_code}"
+    # Failure: Log diagnostic server-side only; NEVER expose the OTP code to client
+    err_summary = "; ".join(delivery_errors) if delivery_errors else "No email provider configured"
+    print(f"[AUTH EMAIL FAILED] Could not send OTP to {recipient_email}. Reason: {err_summary}", flush=True)
+    return False, "Unable to deliver email verification code. Please check your email configuration or click resend."
 
 from fastapi.openapi.docs import get_swagger_ui_html
 
@@ -359,17 +363,36 @@ class VerifyLoginOtpRequest(BaseModel):
     email: EmailStr
     otp: str = Field(..., min_length=6, max_length=6)
 
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+class ResetPasswordRequest(BaseModel):
+    email: EmailStr
+    otp: str = Field(..., min_length=6, max_length=6)
+    new_password: str = Field(..., min_length=6)
+
+class ResendOtpRequest(BaseModel):
+    email: EmailStr
+    otp_type: Optional[str] = "registration"
+
 # ----------------- API Endpoints -----------------
 
 @app.get("/health")
 def health_check():
     has_app_password = bool(SENDER_APP_PASSWORD and SENDER_APP_PASSWORD.strip())
+    has_resend = bool(RESEND_API_KEY and RESEND_API_KEY.strip())
+    is_ready = has_resend or has_app_password
     return {
         "status": "healthy",
         "service": "CogniAgent Authentication Backend",
         "authorized_sender": SENDER_EMAIL,
         "smtp_configured": has_app_password,
-        "message": "Backend is running." if has_app_password else "Backend is running. SENDER_APP_PASSWORD is not set yet in backend/.env for real email sending."
+        "resend_configured": has_resend,
+        "message": (
+            "Backend is running. Email delivery is configured."
+            if is_ready
+            else "Backend is running. Note: No email provider configured."
+        )
     }
 
 @app.post("/register")
@@ -443,10 +466,10 @@ def register_user(req: RegisterRequest):
 
     return {
         "success": True,
-        "message": f"Verification code sent to {email}." if email_sent else f"Account created. Note: {email_msg}",
+        "message": f"Verification code sent to {email}." if email_sent else "Account created, but verification email could not be delivered. Please click resend.",
         "email": email,
         "email_sent": email_sent,
-        "delivery_notice": email_msg if not email_sent else None
+        "delivery_notice": None if email_sent else "Verification email could not be delivered. Please verify your email address or click Resend."
     }
 
 @app.post("/verify-registration")
@@ -618,10 +641,10 @@ def send_login_otp(req: SendLoginOtpRequest):
 
     return {
         "success": True,
-        "message": f"Login code sent to {email}." if email_sent else f"Login code generated. Note: {email_msg}",
+        "message": f"Login code sent to {email}." if email_sent else "Login code generated, but email could not be delivered. Please click resend.",
         "email": email,
         "email_sent": email_sent,
-        "delivery_notice": email_msg if not email_sent else None
+        "delivery_notice": None if email_sent else "Email could not be delivered. Please verify your connection or click Resend."
     }
 
 @app.post("/verify-login-otp")
@@ -723,6 +746,203 @@ def get_current_user(authorization: Optional[str] = Header(None)):
             "name": user["name"],
             "email": user["email"]
         }
+    }
+
+@app.post("/forgot-password")
+def forgot_password(req: ForgotPasswordRequest):
+    email = req.email.strip().lower()
+    now = time.time()
+
+    conn = get_db()
+    cursor = conn.cursor()
+
+    # Look up user
+    cursor.execute("SELECT id, name, is_verified FROM users WHERE email = ?", (email,))
+    user = cursor.fetchone()
+
+    if user:
+        # Check rate limit (30s cooldown between requests)
+        cursor.execute("SELECT last_sent_at FROM otps WHERE email = ? AND otp_type = 'password_reset'", (email,))
+        existing_otp = cursor.fetchone()
+        if existing_otp and (now - existing_otp["last_sent_at"]) < 30:
+            conn.close()
+            return {
+                "success": True,
+                "message": "If an account exists with this email, a password reset code has been sent."
+            }
+
+        otp_code = generate_otp()
+        expires_at = now + OTP_EXPIRY_SECONDS
+
+        cursor.execute(
+            """
+            INSERT INTO otps (email, otp_code, otp_type, expires_at, attempts, last_sent_at)
+            VALUES (?, ?, 'password_reset', ?, 0, ?)
+            ON CONFLICT(email) DO UPDATE SET
+                otp_code = excluded.otp_code,
+                otp_type = excluded.otp_type,
+                expires_at = excluded.expires_at,
+                attempts = 0,
+                last_sent_at = excluded.last_sent_at
+            """,
+            (email, otp_code, expires_at, now)
+        )
+        conn.commit()
+        conn.close()
+
+        # Send email with reset OTP
+        send_email_otp(email, otp_code, purpose="Password Reset")
+    else:
+        conn.close()
+
+    # Generic security message: never reveal whether account exists
+    return {
+        "success": True,
+        "message": "If an account exists with this email, a password reset code has been sent."
+    }
+
+@app.post("/reset-password")
+def reset_password(req: ResetPasswordRequest):
+    email = req.email.strip().lower()
+    otp_input = req.otp.strip()
+    new_password = req.new_password.strip()
+    now = time.time()
+
+    if len(new_password) < 6:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Password must be at least 6 characters long."
+        )
+
+    conn = get_db()
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT * FROM otps WHERE email = ? AND otp_type = 'password_reset'", (email,))
+    otp_record = cursor.fetchone()
+
+    if not otp_record:
+        conn.close()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No active password reset request found for this email. Please request a new code."
+        )
+
+    if now > otp_record["expires_at"]:
+        conn.close()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Password reset code has expired. Please request a new reset code."
+        )
+
+    if otp_record["attempts"] >= MAX_OTP_ATTEMPTS:
+        conn.close()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Too many invalid attempts. Please request a new password reset code."
+        )
+
+    if otp_record["otp_code"] != otp_input:
+        cursor.execute("UPDATE otps SET attempts = attempts + 1 WHERE email = ?", (email,))
+        conn.commit()
+        remaining = MAX_OTP_ATTEMPTS - (otp_record["attempts"] + 1)
+        conn.close()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid verification code. {remaining} attempt(s) remaining."
+        )
+
+    cursor.execute("SELECT id, name FROM users WHERE email = ?", (email,))
+    user = cursor.fetchone()
+    if not user:
+        conn.close()
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User account not found.")
+
+    # Update password and mark verified
+    new_hash = hash_password(new_password)
+    cursor.execute(
+        "UPDATE users SET password_hash = ?, is_verified = 1, updated_at = ? WHERE email = ?",
+        (new_hash, now, email)
+    )
+
+    # Delete used reset OTP
+    cursor.execute("DELETE FROM otps WHERE email = ?", (email,))
+
+    # Invalidate all prior sessions for security
+    cursor.execute("DELETE FROM sessions WHERE user_id = ? OR email = ?", (user["id"], email))
+    conn.commit()
+    conn.close()
+
+    return {
+        "success": True,
+        "message": "Password has been reset successfully. Please log in with your new password."
+    }
+
+@app.post("/logout")
+def logout_user(authorization: Optional[str] = Header(None)):
+    if authorization and authorization.startswith("Bearer "):
+        token = authorization.split(" ")[1].strip()
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM sessions WHERE token = ?", (token,))
+        conn.commit()
+        conn.close()
+    return {"success": True, "message": "Logged out successfully."}
+
+@app.post("/resend-otp")
+def resend_otp(req: ResendOtpRequest):
+    email = req.email.strip().lower()
+    otp_type = (req.otp_type or "registration").strip().lower()
+    now = time.time()
+
+    conn = get_db()
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT id, name, is_verified FROM users WHERE email = ?", (email,))
+    user = cursor.fetchone()
+
+    if not user:
+        conn.close()
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No account found with this email."
+        )
+
+    # Check cooldown (30 seconds)
+    cursor.execute("SELECT last_sent_at FROM otps WHERE email = ?", (email,))
+    existing_otp = cursor.fetchone()
+    if existing_otp and (now - existing_otp["last_sent_at"]) < 30:
+        remaining = int(30 - (now - existing_otp["last_sent_at"]))
+        conn.close()
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"Please wait {remaining} seconds before requesting a new verification code."
+        )
+
+    otp_code = generate_otp()
+    expires_at = now + OTP_EXPIRY_SECONDS
+
+    cursor.execute(
+        """
+        INSERT INTO otps (email, otp_code, otp_type, expires_at, attempts, last_sent_at)
+        VALUES (?, ?, ?, ?, 0, ?)
+        ON CONFLICT(email) DO UPDATE SET
+            otp_code = excluded.otp_code,
+            otp_type = excluded.otp_type,
+            expires_at = excluded.expires_at,
+            attempts = 0,
+            last_sent_at = excluded.last_sent_at
+        """,
+        (email, otp_code, otp_type, expires_at, now)
+    )
+    conn.commit()
+    conn.close()
+
+    email_sent, email_msg = send_email_otp(email, otp_code, purpose="Verification")
+
+    return {
+        "success": True,
+        "message": f"Verification code sent to {email}." if email_sent else "Code regenerated, but email could not be delivered. Please check email provider configuration.",
+        "email_sent": email_sent
     }
 
 # ----------------- Assessment Router -----------------

@@ -15,6 +15,7 @@ import {
   Sparkles,
 } from 'lucide-react';
 import { useTheme } from '@/components/shared/ThemeProvider';
+import { getSession, clearSession } from '@/lib/auth-api';
 
 interface StudentTopbarProps {
   onToggleMobileMenu: () => void;
@@ -24,6 +25,20 @@ export function StudentTopbar({ onToggleMobileMenu }: StudentTopbarProps) {
   const { theme, toggleTheme } = useTheme();
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const [userProfile, setUserProfile] = useState<{ name: string; email: string }>({
+    name: 'Student',
+    email: 'student@cogniagent.com',
+  });
+
+  React.useEffect(() => {
+    const { user } = getSession();
+    if (user) {
+      setUserProfile({
+        name: user.name || 'Student',
+        email: user.email || 'student@cogniagent.com',
+      });
+    }
+  }, []);
 
   return (
     <header className="h-16 px-4 sm:px-6 bg-white dark:bg-[#0d1424] border-b border-slate-200/80 dark:border-slate-800/80 flex items-center justify-between gap-4 sticky top-0 z-20 transition-colors">
@@ -91,11 +106,11 @@ export function StudentTopbar({ onToggleMobileMenu }: StudentTopbarProps) {
             className="flex items-center gap-2.5 p-1 sm:px-2 sm:py-1.5 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800/80 transition-colors cursor-pointer"
           >
             <div className="w-8 h-8 rounded-full bg-indigo-600 text-white font-bold text-xs sm:text-sm flex items-center justify-center shadow-xs">
-              S
+              {userProfile.name.charAt(0).toUpperCase()}
             </div>
             <div className="hidden sm:flex items-center gap-1.5 text-left">
               <span className="text-xs sm:text-sm font-semibold text-slate-800 dark:text-slate-200">
-                Student
+                {userProfile.name}
               </span>
               <ChevronDown className="w-3.5 h-3.5 text-slate-400" />
             </div>
@@ -105,8 +120,8 @@ export function StudentTopbar({ onToggleMobileMenu }: StudentTopbarProps) {
           {userMenuOpen && (
             <div className="absolute right-0 mt-2 w-48 bg-white dark:bg-slate-900 rounded-2xl shadow-xl border border-slate-200 dark:border-slate-800 py-1.5 z-50 text-xs">
               <div className="px-3.5 py-2 border-b border-slate-100 dark:border-slate-800">
-                <p className="font-semibold text-slate-900 dark:text-slate-100">Student</p>
-                <p className="text-[11px] text-slate-400">student@gmail.com</p>
+                <p className="font-semibold text-slate-900 dark:text-slate-100">{userProfile.name}</p>
+                <p className="text-[11px] text-slate-400 truncate">{userProfile.email}</p>
               </div>
 
               <Link
@@ -127,20 +142,18 @@ export function StudentTopbar({ onToggleMobileMenu }: StudentTopbarProps) {
               </Link>
 
               <div className="border-t border-slate-100 dark:border-slate-800 mt-1 pt-1">
-                <Link
-                  href="/signin"
+                <button
+                  type="button"
                   onClick={() => {
-                    if (typeof window !== 'undefined') {
-                      localStorage.removeItem('cogni_auth_token');
-                      localStorage.removeItem('cogni_user');
-                    }
+                    clearSession();
                     setUserMenuOpen(false);
+                    window.location.href = '/signin';
                   }}
-                  className="flex items-center gap-2.5 px-3.5 py-2 text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/30"
+                  className="w-full text-left flex items-center gap-2.5 px-3.5 py-2 text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/30 cursor-pointer"
                 >
                   <LogOut className="w-3.5 h-3.5" />
                   <span>Sign Out</span>
-                </Link>
+                </button>
               </div>
             </div>
           )}

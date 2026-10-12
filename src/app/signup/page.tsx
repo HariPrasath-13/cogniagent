@@ -35,9 +35,8 @@ export default function SignUpPage() {
 
     setLoading(true);
     try {
-      const res = await registerUser(fullName, email, password);
-      const noticeParam = res.delivery_notice ? `&notice=${encodeURIComponent(res.delivery_notice)}` : '';
-      router.push(`/verify-email?email=${encodeURIComponent(email)}&mode=registration${noticeParam}`);
+      await registerUser(fullName, email, password);
+      router.push(`/verify-email?email=${encodeURIComponent(email)}&mode=registration`);
     } catch (err: any) {
       setError(err.message || 'Registration failed. Please try again.');
     } finally {

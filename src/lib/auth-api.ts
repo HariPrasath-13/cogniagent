@@ -103,6 +103,34 @@ export async function verifyLoginOtp(
   });
 }
 
+export async function resendOtp(
+  email: string,
+  otpType: 'registration' | 'login' = 'registration'
+): Promise<AuthResponse> {
+  return request<AuthResponse>('/resend-otp', {
+    method: 'POST',
+    body: JSON.stringify({ email, otp_type: otpType }),
+  });
+}
+
+export async function forgotPassword(email: string): Promise<AuthResponse> {
+  return request<AuthResponse>('/forgot-password', {
+    method: 'POST',
+    body: JSON.stringify({ email }),
+  });
+}
+
+export async function resetPassword(
+  email: string,
+  otp: string,
+  newPassword: string
+): Promise<AuthResponse> {
+  return request<AuthResponse>('/reset-password', {
+    method: 'POST',
+    body: JSON.stringify({ email, otp, new_password: newPassword }),
+  });
+}
+
 export async function getCurrentUser(token: string): Promise<{ user: UserData }> {
   return request<{ user: UserData }>('/me', {
     method: 'GET',
@@ -116,6 +144,8 @@ export function saveSession(token: string, user: UserData): void {
   if (typeof window !== 'undefined') {
     localStorage.setItem('cogni_auth_token', token);
     localStorage.setItem('cogni_user', JSON.stringify(user));
+    // Synchronize client-accessible cookie for route guards & SSR
+    document.cookie = `cogni_auth_token=${encodeURIComponent(token)}; path=/; max-age=604800; SameSite=Lax`;
   }
 }
 
@@ -136,7 +166,18 @@ export function getSession(): { token: string | null; user: UserData | null } {
 
 export function clearSession(): void {
   if (typeof window !== 'undefined') {
+    const token = localStorage.getItem('cogni_auth_token');
+    if (token) {
+      // Invalidate server session in background
+      request<AuthResponse>('/logout', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      }).catch(() => {});
+    }
     localStorage.removeItem('cogni_auth_token');
     localStorage.removeItem('cogni_user');
+    document.cookie = 'cogni_auth_token=; path=/; max-age=0; SameSite=Lax';
   }
 }

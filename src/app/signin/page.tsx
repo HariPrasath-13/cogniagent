@@ -39,7 +39,8 @@ export default function SignInPage() {
         if (res.token && res.user) {
           saveSession(res.token, res.user);
         }
-        router.push('/dashboard');
+        const redirectTarget = (typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('redirect') : null) || '/dashboard';
+        router.push(redirectTarget);
       } catch (err: any) {
         setError(err.message || 'Sign in failed. Please check your credentials.');
       } finally {
