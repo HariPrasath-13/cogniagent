@@ -60,8 +60,8 @@ export default function SignInPage() {
     }
   };
 
-  const handleOAuthDemo = () => {
-    router.push('/dashboard');
+  const handleOAuthDemo = (provider: string) => {
+    setError(`Direct ${provider === 'google' ? 'Google' : 'Microsoft'} OAuth is in development. Please sign in with your email and password below.`);
   };
 
   return (
@@ -89,7 +89,7 @@ export default function SignInPage() {
         <div className="space-y-3 mb-6">
           <button
             type="button"
-            onClick={handleOAuthDemo}
+            onClick={() => handleOAuthDemo('google')}
             className="w-full flex items-center justify-center gap-3 py-2.5 px-4 rounded-xl border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 text-xs sm:text-sm font-semibold shadow-2xs transition-all cursor-pointer"
           >
             <svg className="w-4 h-4" viewBox="0 0 24 24">
@@ -115,7 +115,7 @@ export default function SignInPage() {
 
           <button
             type="button"
-            onClick={handleOAuthDemo}
+            onClick={() => handleOAuthDemo('microsoft')}
             className="w-full flex items-center justify-center gap-3 py-2.5 px-4 rounded-xl border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 text-xs sm:text-sm font-semibold shadow-2xs transition-all cursor-pointer"
           >
             <div className="w-4 h-4 grid grid-cols-2 gap-0.5">

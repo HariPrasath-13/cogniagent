@@ -45,7 +45,7 @@ export default function SignUpPage() {
   };
 
   const handleOAuthDemo = (provider: string) => {
-    router.push(`/verify-email?email=student%40gmail.com&provider=${provider}`);
+    setError(`Direct ${provider === 'google' ? 'Google' : 'Microsoft'} OAuth is in development. Please enter your real email address below to sign up.`);
   };
 
   return (
