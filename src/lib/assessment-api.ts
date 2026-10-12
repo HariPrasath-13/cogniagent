@@ -381,3 +381,172 @@ export async function clearTutorHistory(): Promise<{ success: boolean }> {
   return data;
 }
 
+
+// ---------- Study Materials API ----------
+
+export interface StudyMaterialItem {
+  id: number;
+  filename: string;
+  char_count: number;
+  created_at: number;
+}
+
+export async function getStudyMaterials(): Promise<{ materials: StudyMaterialItem[] }> {
+  const headers = getAuthHeaders();
+  const res = await fetch(`${API_BASE_URL}/api/assessments/materials`, { headers });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || 'Failed to fetch study materials');
+  return data;
+}
+
+export async function uploadStudyMaterial(file: File): Promise<{ success: boolean; material: StudyMaterialItem }> {
+  const headers = getAuthHeaders();
+  const formData = new FormData();
+  formData.append('file', file);
+  const res = await fetch(`${API_BASE_URL}/api/assessments/materials/upload`, {
+    method: 'POST',
+    headers,
+    body: formData,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || 'Failed to upload study material');
+  return data;
+}
+
+export async function deleteStudyMaterial(materialId: number): Promise<{ success: boolean; message: string }> {
+  const headers = getAuthHeaders();
+  const res = await fetch(`${API_BASE_URL}/api/assessments/materials/${materialId}`, {
+    method: 'DELETE',
+    headers,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || 'Failed to delete study material');
+  return data;
+}
+
+// ---------- AI Study Plan API ----------
+
+export interface StudyPlanSession {
+  session_number: number;
+  day_number: number;
+  title: string;
+  concepts_to_study: string[];
+  source_sections: string;
+  estimated_minutes: number;
+  learning_objectives: string[];
+  practice_questions: string[];
+  revision_activity: string;
+  is_revision_session: boolean;
+  status?: 'not_started' | 'in_progress' | 'completed';
+}
+
+export interface StudyPlanOverview {
+  title: string;
+  material_name: string;
+  learning_objective: string;
+  total_duration_days: number;
+  estimated_total_hours: number;
+  major_topics: string[];
+  recommended_learning_order: string[];
+}
+
+export interface StudyPlanConfig {
+  document_id: number;
+  material_name: string;
+  target_days: number;
+  target_date?: string | null;
+  daily_minutes: number;
+  knowledge_level: string;
+  study_goal: string;
+}
+
+export interface StudyPlanItem {
+  id: number;
+  document_id: number;
+  document_name: string;
+  config: StudyPlanConfig;
+  overview: StudyPlanOverview;
+  sessions: StudyPlanSession[];
+  completed_sessions: number[];
+  progress_pct: number;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface GenerateStudyPlanParams {
+  document_id: number;
+  target_days?: number;
+  target_date?: string;
+  daily_minutes?: number;
+  knowledge_level?: 'beginner' | 'intermediate' | 'advanced';
+  study_goal?: 'exam_preparation' | 'concept_understanding' | 'revision';
+}
+
+export async function generateStudyPlan(
+  params: GenerateStudyPlanParams
+): Promise<{ success: boolean; plan: StudyPlanItem }> {
+  const headers = getAuthHeaders();
+  const res = await fetch(`${API_BASE_URL}/api/assessments/study-plan/generate`, {
+    method: 'POST',
+    headers: {
+      ...headers,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(params),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const errorMsg =
+      data.detail ||
+      (Array.isArray(data.detail) ? data.detail[0]?.msg : null) ||
+      `Failed to generate study plan (${res.status})`;
+    throw new Error(errorMsg);
+  }
+  return data;
+}
+
+export async function getStudyPlans(): Promise<{ plans: StudyPlanItem[] }> {
+  const headers = getAuthHeaders();
+  const res = await fetch(`${API_BASE_URL}/api/assessments/study-plans`, { headers });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || 'Failed to fetch study plans');
+  return data;
+}
+
+export async function getStudyPlan(planId: number): Promise<{ plan: StudyPlanItem }> {
+  const headers = getAuthHeaders();
+  const res = await fetch(`${API_BASE_URL}/api/assessments/study-plan/${planId}`, { headers });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || 'Failed to fetch study plan details');
+  return data;
+}
+
+export async function updateStudyPlanSession(
+  planId: number,
+  sessionNumber: number,
+  status: 'completed' | 'not_started'
+): Promise<{ success: boolean; session_number: number; status: string; completed_sessions: number[]; progress_pct: number }> {
+  const headers = getAuthHeaders();
+  const res = await fetch(`${API_BASE_URL}/api/assessments/study-plan/${planId}/session`, {
+    method: 'PATCH',
+    headers: {
+      ...headers,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ session_number: sessionNumber, status }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || 'Failed to update session progress');
+  return data;
+}
+
+export async function deleteStudyPlan(planId: number): Promise<{ success: boolean; message: string }> {
+  const headers = getAuthHeaders();
+  const res = await fetch(`${API_BASE_URL}/api/assessments/study-plan/${planId}`, {
+    method: 'DELETE',
+    headers,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || 'Failed to delete study plan');
+  return data;
+}

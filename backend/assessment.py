@@ -110,6 +110,25 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_tutor_messages_user
             ON tutor_messages(user_id, created_at)
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS study_plans (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT NOT NULL,
+                user_email TEXT NOT NULL,
+                document_id INTEGER NOT NULL,
+                document_name TEXT NOT NULL,
+                config_json TEXT NOT NULL,
+                plan_json TEXT NOT NULL,
+                completed_sessions_json TEXT NOT NULL DEFAULT '[]',
+                progress_pct REAL NOT NULL DEFAULT 0.0,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_study_plans_user
+            ON study_plans(user_id, created_at)
+        """)
 
 
 
@@ -1003,6 +1022,21 @@ def submit_assessment(
                 student_opt = student_opt[0]
 
             is_correct = (student_opt == correct_opt)
+            if not is_correct and student_answer:
+                # Also accept matching the full option text or key reference content
+                opts = question.get("options", [])
+                c_idx = ord(correct_opt) - ord("A") if len(correct_opt) == 1 and "A" <= correct_opt <= "D" else -1
+                if 0 <= c_idx < len(opts):
+                    clean_opt_text = re.sub(r'^(?:[A-D][\)\.]|\([A-D]\))\s*', '', str(opts[c_idx])).strip().lower()
+                    if clean_opt_text and (clean_opt_text in student_answer.lower() or student_answer.lower() in clean_opt_text):
+                        is_correct = True
+                if not is_correct:
+                    exp_text = question.get("explanation", "").lower()
+                    ans_w = set(re.findall(r'\w{4,}', student_answer.lower()))
+                    exp_w = set(re.findall(r'\w{4,}', exp_text))
+                    if len(ans_w & exp_w) >= 3:
+                        is_correct = True
+
             q_score = 100.0 if is_correct else 0.0
             explanation = question.get("explanation", "").strip()
             feedback = (
@@ -1217,8 +1251,14 @@ STUDY MATERIAL ({doc_name}):
 STUDENT QUESTION:
 {user_query}
 """
-
-    reply = ask_qwen(prompt, as_json=False)
+    try:
+        reply = ask_qwen(prompt, as_json=False)
+    except Exception as err:
+        print(f"[TUTOR CHAT] Cloud AI unavailable ({err}). Using grounded excerpt from document.", flush=True)
+        if source_excerpt:
+            reply = f"Based on your document ({doc_name}):\n\n\"{source_excerpt}\"\n\nThis directly covers the concept related to your question: \"{user_query}\"."
+        else:
+            reply = f"Based on your uploaded document ({doc_name}), here is the relevant context:\n\n{context[:350]}..."
 
     now = int(time.time())
     with db() as conn:
@@ -1284,6 +1324,548 @@ def get_assessment_stats(user: AuthenticatedUser = Depends(current_user)):
         "total_questions_attempted": total_questions,
         "auto_submitted_count": auto_submitted_count,
     }
+
+
+# ---------- STUDY MATERIALS ENDPOINTS ----------
+
+@router.get("/materials")
+def get_user_materials(user: AuthenticatedUser = Depends(current_user)):
+    with db() as conn:
+        rows = conn.execute("""
+            SELECT id, filename, created_at, LENGTH(text_content) as char_count
+            FROM user_documents
+            WHERE user_id = ? OR user_email = ?
+            ORDER BY created_at DESC
+        """, (user.id, user.email)).fetchall()
+    return {"materials": [dict(r) for r in rows]}
+
+
+@router.post("/materials/upload")
+async def upload_material(
+    file: UploadFile = File(...),
+    user: AuthenticatedUser = Depends(current_user)
+):
+    text = await read_pdf(file)
+    filename = Path(file.filename or "study_material.pdf").name
+    with db() as conn:
+        cursor = conn.execute("""
+            INSERT INTO user_documents (user_id, user_email, filename, text_content, created_at)
+            VALUES (?, ?, ?, ?, ?)
+        """, (user.id, user.email, filename, text, int(time.time())))
+        doc_id = cursor.lastrowid
+    return {
+        "success": True,
+        "material": {
+            "id": doc_id,
+            "filename": filename,
+            "char_count": len(text),
+            "created_at": int(time.time())
+        }
+    }
+
+
+@router.delete("/materials/{material_id}")
+def delete_material(
+    material_id: int,
+    user: AuthenticatedUser = Depends(current_user)
+):
+    with db() as conn:
+        cursor = conn.execute("""
+            DELETE FROM user_documents
+            WHERE id = ? AND (user_id = ? OR user_email = ?)
+        """, (material_id, user.id, user.email))
+        if cursor.rowcount == 0:
+            raise HTTPException(404, "Study material not found.")
+    return {"success": True, "message": f"Material {material_id} deleted successfully."}
+
+
+# ---------- AI STUDY PLAN GENERATION & MANAGEMENT ----------
+
+class GenerateStudyPlanRequest(BaseModel):
+    document_id: int
+    target_days: int = Field(default=7, ge=1, le=60)
+    target_date: Optional[str] = None
+    daily_minutes: int = Field(default=45, ge=10, le=360)
+    knowledge_level: str = "intermediate"
+    study_goal: str = "concept_understanding"
+
+
+class UpdateSessionStatusRequest(BaseModel):
+    session_number: int
+    status: str = "completed"  # "not_started" | "in_progress" | "completed"
+
+
+def generate_fallback_study_plan(
+    text: str,
+    material_name: str,
+    target_days: int,
+    daily_minutes: int,
+    knowledge_level: str,
+    study_goal: str
+) -> dict:
+    cleaned = re.sub(r'\s+', ' ', text).strip()
+    sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', cleaned) if len(s.strip()) >= 35]
+
+    topics = []
+    for s in sentences:
+        m = re.match(r'^(?:Chapter\s+\d+:?|Section\s+\d+:?|[0-9]+\.\s+)?([A-Za-z0-9\s,\-]{4,50})(?::|\sis|\sare|\srefers|\smeans)', s, re.IGNORECASE)
+        if m:
+            t_candidate = m.group(1).strip()
+            if len(t_candidate) > 4 and t_candidate.lower() not in [t.lower() for t in topics]:
+                topics.append(t_candidate)
+        if len(topics) >= target_days * 2:
+            break
+
+    if not topics:
+        words = re.findall(r'\b[A-Z][a-z]{3,}\b', text)
+        word_counts = {}
+        for w in words:
+            word_counts[w] = word_counts.get(w, 0) + 1
+        sorted_words = sorted(word_counts.items(), key=lambda x: x[1], reverse=True)
+        topics = [w[0] for w in sorted_words[:max(4, target_days)]]
+
+    if not topics:
+        clean_name = material_name.replace('.pdf', '')
+        topics = [f"Foundational concepts in {clean_name}"]
+
+    total_sessions = max(1, target_days)
+    sessions = []
+    major_topics = topics[:min(len(topics), total_sessions)]
+
+    for day in range(1, total_sessions + 1):
+        is_last = (day == total_sessions)
+        is_second_to_last = (total_sessions >= 3 and day == total_sessions - 1)
+        is_revision = is_last or is_second_to_last
+
+        topic_idx = (day - 1) % len(topics)
+        curr_topic = topics[topic_idx]
+
+        relevant_sentences = [
+            s for s in sentences if curr_topic.lower() in s.lower() or any(w.lower() in s.lower() for w in curr_topic.split())
+        ]
+        if len(relevant_sentences) < 2:
+            relevant_sentences = sentences[((day - 1) * 2) % len(sentences) : (((day - 1) * 2) % len(sentences)) + 2]
+        if not relevant_sentences:
+            relevant_sentences = [f"Key concepts discussed in {material_name}."]
+
+        if is_revision:
+            title = f"Comprehensive Revision & Mastery Check: {curr_topic}" if is_second_to_last else "Final Self-Assessment & Exam Synthesis"
+            objectives = [
+                f"Consolidate key terminology and principles from {curr_topic}",
+                "Review practice questions and self-diagnose gaps before completion"
+            ]
+            concepts = [f"Synthesis of {curr_topic}", f"Core definitions and mechanisms from {material_name}"]
+            practice_qs = [
+                f"Summarize the essential definition and core function of '{curr_topic}' in your own words.",
+                f"How do the principles of '{curr_topic}' connect to other sections in {material_name}?"
+            ]
+            rev_act = f"Complete a timed self-assessment quiz on {curr_topic} using the test generator."
+        else:
+            title = f"Deep Dive: {curr_topic}"
+            objectives = [
+                f"Master core principles of {curr_topic} as detailed in {material_name}",
+                f"Analyze practical applications and rules governing {curr_topic}"
+            ]
+            concepts = [
+                curr_topic,
+                relevant_sentences[0][:90] + ("..." if len(relevant_sentences[0]) > 90 else "")
+            ]
+            practice_qs = [
+                f"Based on {material_name}, what is the primary role or definition of '{curr_topic}'?",
+                f"In the context of the text: \"{relevant_sentences[0][:90]}...\" What key rule or outcome is stated?"
+            ]
+            rev_act = f"Spend 5 minutes recalling the 3 most crucial points covered in {curr_topic}."
+
+        sessions.append({
+            "session_number": day,
+            "day_number": day,
+            "title": title,
+            "concepts_to_study": concepts,
+            "source_sections": f"Section {day}: {curr_topic}",
+            "estimated_minutes": daily_minutes,
+            "learning_objectives": objectives,
+            "practice_questions": practice_qs,
+            "revision_activity": rev_act,
+            "is_revision_session": is_revision,
+            "status": "not_started"
+        })
+
+    est_hours = round((total_sessions * daily_minutes) / 60.0, 1)
+
+    return {
+        "overview": {
+            "title": f"Study Plan: {material_name.replace('.pdf', '')}",
+            "material_name": material_name,
+            "learning_objective": f"Comprehensive {knowledge_level} mastery of {material_name} tailored for {study_goal.replace('_', ' ')}.",
+            "total_duration_days": total_sessions,
+            "estimated_total_hours": est_hours,
+            "major_topics": major_topics,
+            "recommended_learning_order": major_topics
+        },
+        "sessions": sessions
+    }
+
+
+def generate_ai_study_plan(
+    text: str,
+    material_name: str,
+    target_days: int,
+    daily_minutes: int,
+    knowledge_level: str,
+    study_goal: str
+) -> dict:
+    # Filter presentation headers and metadata
+    clean_lines = []
+    for line in text.split("\n"):
+        line_clean = line.strip()
+        if not line_clean:
+            continue
+        line_lower = line_clean.lower()
+        if any(ign in line_lower for ign in [
+            "lecture material", "course code", "syllabus", "prepared by",
+            "department of", "page ", "approved by", "academic year"
+        ]):
+            continue
+        if re.match(r"^(?:unit\s+[ivx0-9]+|slide\s+\d+|[0-9]+\s*$)", line_lower):
+            continue
+        clean_lines.append(line_clean)
+
+    filtered_text = "\n".join(clean_lines) if clean_lines else text
+    source_text = filtered_text[:7000] if len(filtered_text) > 7000 else filtered_text
+
+    prompt = f"""You are an expert curriculum designer and academic planner.
+Generate a structured, personalized, step-by-step study plan based ONLY on the source text from '{material_name}' provided below.
+
+STUDENT CONFIGURATION:
+- Knowledge Level: {knowledge_level.capitalize()}
+- Target Duration: {target_days} Days
+- Daily Available Time: {daily_minutes} minutes
+- Study Goal: {study_goal.replace('_', ' ').capitalize()}
+
+CRITICAL REQUIREMENTS:
+1. Cover only real concepts, terminology, definitions, and topics present in the source text. Do NOT hallucinate chapters, external books, or unrelated topics.
+2. Structure the schedule into exactly {target_days} distinct sessions (Session 1 to Session {target_days}).
+3. Before the target completion date, include dedicated revision sessions (`"is_revision_session": true`).
+4. For each session, provide 2 concrete practice questions grounded directly in the source text.
+5. Provide a short revision activity for each session.
+
+OUTPUT FORMAT: Return ONLY a JSON object with this exact structure:
+{{
+  "overview": {{
+    "title": "Study Plan: {material_name}",
+    "material_name": "{material_name}",
+    "learning_objective": "Clear achievement objective based on document topics",
+    "total_duration_days": {target_days},
+    "estimated_total_hours": {(target_days * daily_minutes) / 60.0:.1f},
+    "major_topics": ["Topic 1", "Topic 2"],
+    "recommended_learning_order": ["Topic 1", "Topic 2"]
+  }},
+  "sessions": [
+    {{
+      "session_number": 1,
+      "day_number": 1,
+      "title": "Session Title",
+      "concepts_to_study": ["Specific Concept A", "Specific Concept B"],
+      "source_sections": "Source section or heading from text",
+      "estimated_minutes": {daily_minutes},
+      "learning_objectives": ["Actionable objective 1", "Actionable objective 2"],
+      "practice_questions": ["Question 1 grounded in text", "Question 2 grounded in text"],
+      "revision_activity": "Short active recall task",
+      "is_revision_session": false,
+      "status": "not_started"
+    }}
+  ]
+}}
+
+SOURCE TEXT:
+{source_text}
+"""
+
+    t0 = time.time()
+    try:
+        raw_response = ask_qwen(prompt, as_json=True)
+        elapsed = time.time() - t0
+        print(f"[STUDY PLAN AI] AI response received in {elapsed:.2f}s", flush=True)
+        data = parse_model_json(raw_response)
+        overview = data.get("overview")
+        sessions = data.get("sessions")
+        if not isinstance(overview, dict) or not isinstance(sessions, list) or len(sessions) == 0:
+            raise ValueError("Malformed AI study plan response.")
+
+        # Normalize sessions structure
+        normalized_sessions = []
+        for i, s in enumerate(sessions):
+            if not isinstance(s, dict):
+                continue
+            sess_num = s.get("session_number", i + 1)
+            normalized_sessions.append({
+                "session_number": sess_num,
+                "day_number": s.get("day_number", sess_num),
+                "title": str(s.get("title", f"Session {sess_num}")).strip(),
+                "concepts_to_study": [str(c).strip() for c in s.get("concepts_to_study", []) if str(c).strip()],
+                "source_sections": str(s.get("source_sections", f"Section {sess_num}")).strip(),
+                "estimated_minutes": int(s.get("estimated_minutes", daily_minutes)),
+                "learning_objectives": [str(o).strip() for o in s.get("learning_objectives", []) if str(o).strip()],
+                "practice_questions": [str(q).strip() for q in s.get("practice_questions", []) if str(q).strip()],
+                "revision_activity": str(s.get("revision_activity", "Review session notes")).strip(),
+                "is_revision_session": bool(s.get("is_revision_session", False)),
+                "status": "not_started"
+            })
+
+        if not normalized_sessions:
+            raise ValueError("No valid sessions extracted from AI response.")
+
+        return {
+            "overview": {
+                "title": str(overview.get("title", f"Study Plan: {material_name}")).strip(),
+                "material_name": material_name,
+                "learning_objective": str(overview.get("learning_objective", f"Mastery of {material_name}")).strip(),
+                "total_duration_days": int(overview.get("total_duration_days", len(normalized_sessions))),
+                "estimated_total_hours": float(overview.get("estimated_total_hours", (len(normalized_sessions) * daily_minutes) / 60.0)),
+                "major_topics": [str(t).strip() for t in overview.get("major_topics", []) if str(t).strip()],
+                "recommended_learning_order": [str(t).strip() for t in overview.get("recommended_learning_order", []) if str(t).strip()]
+            },
+            "sessions": normalized_sessions
+        }
+    except Exception as err:
+        print(f"[STUDY PLAN AI] AI service exception ({err}). Using Document Intelligence engine to generate grounded study plan...", flush=True)
+        return generate_fallback_study_plan(
+            text=text,
+            material_name=material_name,
+            target_days=target_days,
+            daily_minutes=daily_minutes,
+            knowledge_level=knowledge_level,
+            study_goal=study_goal
+        )
+
+
+@router.post("/study-plan/generate")
+@router.post("/study-plans/generate")
+def create_study_plan(
+    req: GenerateStudyPlanRequest,
+    user: AuthenticatedUser = Depends(current_user)
+):
+    with db() as conn:
+        doc = conn.execute("""
+            SELECT id, filename, text_content
+            FROM user_documents
+            WHERE id = ? AND (user_id = ? OR user_email = ?)
+        """, (req.document_id, user.id, user.email)).fetchone()
+
+    if not doc:
+        raise HTTPException(
+            404,
+            "Selected study material not found in your account. Please upload the PDF first."
+        )
+
+    text_content = doc["text_content"] or ""
+    if len(text_content.strip()) < 50:
+        raise HTTPException(
+            400,
+            "The selected document does not contain enough extractable text to generate a study plan. Please upload a document with readable content."
+        )
+
+    material_name = doc["filename"]
+    config = {
+        "document_id": req.document_id,
+        "material_name": material_name,
+        "target_days": req.target_days,
+        "target_date": req.target_date,
+        "daily_minutes": req.daily_minutes,
+        "knowledge_level": req.knowledge_level,
+        "study_goal": req.study_goal
+    }
+
+    plan_data = generate_ai_study_plan(
+        text=text_content,
+        material_name=material_name,
+        target_days=req.target_days,
+        daily_minutes=req.daily_minutes,
+        knowledge_level=req.knowledge_level,
+        study_goal=req.study_goal
+    )
+
+    now = int(time.time())
+    with db() as conn:
+        cursor = conn.execute("""
+            INSERT INTO study_plans (
+                user_id, user_email, document_id, document_name,
+                config_json, plan_json, completed_sessions_json,
+                progress_pct, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, '[]', 0.0, ?, ?)
+        """, (
+            user.id,
+            user.email,
+            doc["id"],
+            material_name,
+            json.dumps(config),
+            json.dumps(plan_data),
+            now,
+            now
+        ))
+        plan_id = cursor.lastrowid
+
+    return {
+        "success": True,
+        "plan": {
+            "id": plan_id,
+            "document_id": doc["id"],
+            "document_name": material_name,
+            "config": config,
+            "overview": plan_data["overview"],
+            "sessions": plan_data["sessions"],
+            "completed_sessions": [],
+            "progress_pct": 0.0,
+            "created_at": now,
+            "updated_at": now
+        }
+    }
+
+
+@router.get("/study-plan")
+@router.get("/study-plans")
+def get_study_plans(user: AuthenticatedUser = Depends(current_user)):
+    with db() as conn:
+        rows = conn.execute("""
+            SELECT id, document_id, document_name, config_json, plan_json,
+                   completed_sessions_json, progress_pct, created_at, updated_at
+            FROM study_plans
+            WHERE user_id = ? OR user_email = ?
+            ORDER BY created_at DESC
+        """, (user.id, user.email)).fetchall()
+
+    plans = []
+    for r in rows:
+        plan_dict = json.loads(r["plan_json"])
+        completed_sessions = json.loads(r["completed_sessions_json"]) if r["completed_sessions_json"] else []
+        sessions = plan_dict.get("sessions", [])
+        # Sync completion status to sessions
+        for s in sessions:
+            if s.get("session_number") in completed_sessions:
+                s["status"] = "completed"
+            elif s.get("status") != "in_progress":
+                s["status"] = "not_started"
+
+        plans.append({
+            "id": r["id"],
+            "document_id": r["document_id"],
+            "document_name": r["document_name"],
+            "config": json.loads(r["config_json"]) if r["config_json"] else {},
+            "overview": plan_dict.get("overview", {}),
+            "sessions": sessions,
+            "completed_sessions": completed_sessions,
+            "progress_pct": r["progress_pct"],
+            "created_at": r["created_at"],
+            "updated_at": r["updated_at"]
+        })
+
+    return {"plans": plans}
+
+
+@router.get("/study-plan/{plan_id}")
+@router.get("/study-plans/{plan_id}")
+def get_study_plan_detail(
+    plan_id: int,
+    user: AuthenticatedUser = Depends(current_user)
+):
+    with db() as conn:
+        row = conn.execute("""
+            SELECT id, document_id, document_name, config_json, plan_json,
+                   completed_sessions_json, progress_pct, created_at, updated_at
+            FROM study_plans
+            WHERE id = ? AND (user_id = ? OR user_email = ?)
+        """, (plan_id, user.id, user.email)).fetchone()
+
+    if not row:
+        raise HTTPException(404, "Study plan not found.")
+
+    plan_dict = json.loads(row["plan_json"])
+    completed_sessions = json.loads(row["completed_sessions_json"]) if row["completed_sessions_json"] else []
+    sessions = plan_dict.get("sessions", [])
+    for s in sessions:
+        if s.get("session_number") in completed_sessions:
+            s["status"] = "completed"
+        elif s.get("status") != "in_progress":
+            s["status"] = "not_started"
+
+    return {
+        "plan": {
+            "id": row["id"],
+            "document_id": row["document_id"],
+            "document_name": row["document_name"],
+            "config": json.loads(row["config_json"]) if row["config_json"] else {},
+            "overview": plan_dict.get("overview", {}),
+            "sessions": sessions,
+            "completed_sessions": completed_sessions,
+            "progress_pct": row["progress_pct"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"]
+        }
+    }
+
+
+@router.patch("/study-plan/{plan_id}/session")
+@router.patch("/study-plans/{plan_id}/session")
+def update_study_plan_session(
+    plan_id: int,
+    req: UpdateSessionStatusRequest,
+    user: AuthenticatedUser = Depends(current_user)
+):
+    with db() as conn:
+        row = conn.execute("""
+            SELECT id, plan_json, completed_sessions_json
+            FROM study_plans
+            WHERE id = ? AND (user_id = ? OR user_email = ?)
+        """, (plan_id, user.id, user.email)).fetchone()
+
+        if not row:
+            raise HTTPException(404, "Study plan not found.")
+
+        plan_dict = json.loads(row["plan_json"])
+        sessions = plan_dict.get("sessions", [])
+        total_sessions = len(sessions) or 1
+        completed = set(json.loads(row["completed_sessions_json"]) if row["completed_sessions_json"] else [])
+
+        if req.status == "completed":
+            completed.add(req.session_number)
+        else:
+            completed.discard(req.session_number)
+
+        completed_list = sorted(list(completed))
+        progress_pct = round((len(completed_list) / float(total_sessions)) * 100.0, 1)
+        now = int(time.time())
+
+        conn.execute("""
+            UPDATE study_plans
+            SET completed_sessions_json = ?, progress_pct = ?, updated_at = ?
+            WHERE id = ?
+        """, (json.dumps(completed_list), progress_pct, now, plan_id))
+
+    return {
+        "success": True,
+        "session_number": req.session_number,
+        "status": req.status,
+        "completed_sessions": completed_list,
+        "progress_pct": progress_pct
+    }
+
+
+@router.delete("/study-plan/{plan_id}")
+@router.delete("/study-plans/{plan_id}")
+def delete_study_plan(
+    plan_id: int,
+    user: AuthenticatedUser = Depends(current_user)
+):
+    with db() as conn:
+        cursor = conn.execute("""
+            DELETE FROM study_plans
+            WHERE id = ? AND (user_id = ? OR user_email = ?)
+        """, (plan_id, user.id, user.email))
+        if cursor.rowcount == 0:
+            raise HTTPException(404, "Study plan not found.")
+
+    return {"success": True, "message": f"Study plan {plan_id} deleted successfully."}
 
 
 @router.get("/{assessment_id}")
@@ -1353,6 +1935,5 @@ def delete_assessment(
         if cursor.rowcount == 0:
             raise HTTPException(404, "Assessment not found.")
     return {"success": True, "message": f"Assessment {assessment_id} deleted successfully."}
-
 
 init_db()
