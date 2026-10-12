@@ -9,9 +9,11 @@ import {
   Award,
   ArrowRight,
   TrendingUp,
+  AlertTriangle,
   Play,
   FileText,
   Upload,
+  Layers,
   Sparkles,
   Loader2,
 } from 'lucide-react';
@@ -19,17 +21,12 @@ import { MetricCard } from '@/components/student/MetricCard';
 import { EmptyState } from '@/components/shared/EmptyState';
 import { useTheme } from '@/components/shared/ThemeProvider';
 import { getSession } from '@/lib/auth-api';
-import {
-  getAssessmentHistory,
-  getStudyMaterials,
-  AssessmentHistoryItem,
-} from '@/lib/assessment-api';
+import { getAssessmentHistory, AssessmentHistoryItem } from '@/lib/assessment-api';
 
 export default function StudentDashboardPage() {
   const { theme } = useTheme();
   const [userName, setUserName] = useState('Student');
   const [history, setHistory] = useState<AssessmentHistoryItem[]>([]);
-  const [materialsCount, setMaterialsCount] = useState<number>(0);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -38,13 +35,12 @@ export default function StudentDashboardPage() {
       setUserName(user.name);
     }
 
-    Promise.all([
-      getAssessmentHistory().catch(() => ({ history: [] })),
-      getStudyMaterials().catch(() => ({ materials: [] })),
-    ])
-      .then(([histData, matData]) => {
-        setHistory(histData.history || []);
-        setMaterialsCount(matData.materials ? matData.materials.length : 0);
+    getAssessmentHistory()
+      .then((data) => {
+        setHistory(data.history || []);
+      })
+      .catch(() => {
+        setHistory([]);
       })
       .finally(() => {
         setLoading(false);
@@ -66,7 +62,7 @@ export default function StudentDashboardPage() {
       ? `${(learningMinutes / 60).toFixed(1)} hrs`
       : `${learningMinutes} mins`;
 
-  const hasData = history.length > 0 || materialsCount > 0;
+  const hasData = history.length > 0;
 
   return (
     <div className="space-y-6">
@@ -114,11 +110,11 @@ export default function StudentDashboardPage() {
         />
         <MetricCard
           label="Study Documents"
-          value={String(materialsCount)}
-          subtitle={materialsCount > 0 ? `${materialsCount} custom material(s)` : 'No documents uploaded'}
+          value={String(history.length)}
+          subtitle={history.length > 0 ? 'Custom materials' : 'No documents uploaded'}
           icon={BookOpen}
           variant="amber"
-          isEmpty={materialsCount === 0}
+          isEmpty={history.length === 0}
         />
         <MetricCard
           label="Learning Time"
@@ -158,7 +154,7 @@ export default function StudentDashboardPage() {
           <EmptyState
             icon={TrendingUp}
             title="No Assessments Yet"
-            description="No assessments completed yet. Upload a PDF textbook or notes to generate your first test."
+            description="Your assessment history is completely fresh. Upload a PDF textbook or notes to generate your first test."
             actionText="Upload PDF &amp; Take Test"
             actionHref="/upload"
             className="py-12"
@@ -256,23 +252,6 @@ export default function StudentDashboardPage() {
           </Link>
 
           <Link
-            href="/study-plan"
-            className="p-4 rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-800/40 flex items-start gap-3.5 hover:border-indigo-300 dark:hover:border-indigo-700 transition-all group"
-          >
-            <div className="w-10 h-10 rounded-xl bg-emerald-100 dark:bg-emerald-900/60 text-emerald-600 dark:text-emerald-400 flex items-center justify-center shrink-0">
-              <BookOpen className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />
-            </div>
-            <div>
-              <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100 group-hover:text-emerald-600 dark:group-hover:text-emerald-400">
-                AI Study Plan
-              </h3>
-              <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                Create structured daily study milestones from your notes
-              </p>
-            </div>
-          </Link>
-
-          <Link
             href="/test-setup"
             className="p-4 rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-800/40 flex items-start gap-3.5 hover:border-indigo-300 dark:hover:border-indigo-700 transition-all group"
           >
@@ -285,6 +264,23 @@ export default function StudentDashboardPage() {
               </h3>
               <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
                 Practice with AI-evaluated free response questions
+              </p>
+            </div>
+          </Link>
+
+          <Link
+            href="/ai-tutor"
+            className="p-4 rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-800/40 flex items-start gap-3.5 hover:border-indigo-300 dark:hover:border-indigo-700 transition-all group"
+          >
+            <div className="w-10 h-10 rounded-xl bg-sky-100 dark:bg-sky-900/60 text-sky-600 dark:text-sky-400 flex items-center justify-center shrink-0">
+              <Sparkles className="w-5 h-5" />
+            </div>
+            <div>
+              <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100 group-hover:text-sky-600 dark:group-hover:text-sky-400">
+                Ask AI Tutor
+              </h3>
+              <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                Clarify questions and review difficult concepts
               </p>
             </div>
           </Link>
