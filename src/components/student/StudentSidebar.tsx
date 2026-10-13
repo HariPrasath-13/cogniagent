@@ -9,7 +9,6 @@ import {
   ClipboardCheck,
   BookOpen,
   Bot,
-  FolderArchive,
   User,
   Settings,
   LogOut,
@@ -33,7 +32,6 @@ export function StudentSidebar({ mobileOpen = false, onCloseMobile }: StudentSid
     { label: 'Take Test', href: '/test-setup', icon: ClipboardCheck },
     { label: 'Study Plan', href: '/study-plan', icon: BookOpen },
     { label: 'AI Tutor', href: '/ai-tutor', icon: Bot },
-    { label: 'My Materials', href: '/materials', icon: FolderArchive },
     { label: 'Profile', href: '/profile', icon: User },
     { label: 'Settings', href: '/settings', icon: Settings },
   ];
