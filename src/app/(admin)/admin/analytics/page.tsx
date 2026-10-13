@@ -40,7 +40,7 @@ export default function AdminAnalyticsPage() {
             Model Performance Comparison
           </h3>
           <p className="text-xs text-slate-500 mt-1">
-            View the 3-model evaluation chart for LLM Baseline, Base RAG, and CogniAgent.
+            View the 3-model evaluation chart for Phi, Qwen, and CogniAgent.
           </p>
         </div>
         <Link

@@ -356,6 +356,11 @@ from fastapi.openapi.docs import get_swagger_ui_html
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    try:
+        from backend.study_plan import init_study_plan_db
+        init_study_plan_db()
+    except Exception as e:
+        print(f"[STARTUP WARNING] Study plan DB init: {e}", flush=True)
     yield
 
 app = FastAPI(

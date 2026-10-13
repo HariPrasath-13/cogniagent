@@ -67,7 +67,7 @@ export default function AdminModelComparisonPage() {
             Model Performance Comparison
           </h1>
           <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400 mt-0.5">
-            Empirical comparison across LLM Baseline, Base RAG, and CogniAgent Proposed architecture
+            Empirical comparison across Phi (Baseline), Qwen (Base RAG), and CogniAgent Proposed architecture
           </p>
         </div>
 
@@ -116,7 +116,7 @@ export default function AdminModelComparisonPage() {
 
                   {/* 3 Triple Columns for the 3 Models */}
                   <div className="flex items-end justify-center gap-3 h-52 pt-6 pb-2 px-2">
-                    {/* Model 1: LLM Baseline (Pink/Red) */}
+                    {/* Model 1: Phi Baseline (Pink/Red) */}
                     <div className="flex flex-col items-center h-full justify-end flex-1 max-w-[42px] group">
                       <span className="text-[11px] font-bold text-rose-600 dark:text-rose-400 mb-1.5">
                         {item.baselineLLM}%
@@ -130,11 +130,11 @@ export default function AdminModelComparisonPage() {
                         />
                       </div>
                       <span className="text-[10px] font-semibold text-slate-400 mt-2">
-                        LLM
+                        Phi
                       </span>
                     </div>
 
-                    {/* Model 2: Base RAG (Sky Blue) */}
+                    {/* Model 2: Qwen (Base RAG) (Sky Blue) */}
                     <div className="flex flex-col items-center h-full justify-end flex-1 max-w-[42px] group">
                       <span className="text-[11px] font-bold text-sky-600 dark:text-sky-400 mb-1.5">
                         {item.baseRAG}%
@@ -148,7 +148,7 @@ export default function AdminModelComparisonPage() {
                         />
                       </div>
                       <span className="text-[10px] font-semibold text-slate-400 mt-2">
-                        Base RAG
+                        Qwen
                       </span>
                     </div>
 
@@ -179,11 +179,11 @@ export default function AdminModelComparisonPage() {
           <div className="flex flex-wrap items-center justify-center gap-6 pt-2 pb-2">
             <div className="flex items-center gap-2 text-xs font-semibold text-slate-600 dark:text-slate-300">
               <span className="w-3.5 h-3.5 rounded-sm bg-rose-400 dark:bg-rose-500" />
-              <span>LLM (Baseline)</span>
+              <span>Phi (Baseline)</span>
             </div>
             <div className="flex items-center gap-2 text-xs font-semibold text-slate-600 dark:text-slate-300">
               <span className="w-3.5 h-3.5 rounded-sm bg-sky-400 dark:bg-sky-500" />
-              <span>Base RAG</span>
+              <span>Qwen (Base RAG)</span>
             </div>
             <div className="flex items-center gap-2 text-xs font-semibold text-slate-600 dark:text-slate-300">
               <span className="w-3.5 h-3.5 rounded-sm bg-emerald-500" />
@@ -231,8 +231,8 @@ export default function AdminModelComparisonPage() {
                 <thead>
                   <tr className="border-b border-slate-200 dark:border-slate-800 text-slate-500 uppercase tracking-wider font-semibold">
                     <th className="py-2.5">Evaluation Metric</th>
-                    <th className="py-2.5">LLM (Baseline)</th>
-                    <th className="py-2.5">Base RAG</th>
+                    <th className="py-2.5">Phi (Baseline)</th>
+                    <th className="py-2.5">Qwen (Base RAG)</th>
                     <th className="py-2.5 text-emerald-600 font-bold">CogniAgent</th>
                     <th className="py-2.5 text-right">Advantage</th>
                   </tr>

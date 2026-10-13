@@ -73,14 +73,33 @@ function getAuthHeaders(): Record<string, string> {
   };
 }
 
+function formatNetworkError(err: any): Error {
+  if (err.message?.includes('Failed to fetch') || err.name === 'TypeError') {
+    const isCloud = API_BASE_URL.includes('onrender.com') || !API_BASE_URL.includes('localhost');
+    if (isCloud) {
+      return new Error(
+        `Cannot connect to cloud backend (${API_BASE_URL}). The Render server is waking up from sleep mode (this may take 30-50 seconds)—please wait a moment and try again.`
+      );
+    }
+    return new Error(
+      `Cannot connect to backend server (${API_BASE_URL}). Please ensure the FastAPI server is running on port 8000.`
+    );
+  }
+  return err;
+}
+
 export async function getStudyDocuments(): Promise<StudyPlanDocument[]> {
   const headers = getAuthHeaders();
-  const res = await fetch(`${API_BASE_URL}/api/study-plans/documents`, { headers });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    throw new Error(data.detail || 'Failed to load study documents');
+  try {
+    const res = await fetch(`${API_BASE_URL}/api/study-plans/documents`, { headers });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.detail || 'Failed to load study documents');
+    }
+    return data.documents || [];
+  } catch (err: any) {
+    throw formatNetworkError(err);
   }
-  return data.documents || [];
 }
 
 export async function uploadStudyDocument(
@@ -120,7 +139,20 @@ export async function uploadStudyDocument(
     };
 
     xhr.onerror = () => {
-      reject(new Error('Network error during PDF upload.'));
+      const isCloud = API_BASE_URL.includes('onrender.com') || !API_BASE_URL.includes('localhost');
+      if (isCloud) {
+        reject(
+          new Error(
+            `Cannot connect to cloud backend (${API_BASE_URL}). The server is waking up from sleep mode—please wait a moment and try again.`
+          )
+        );
+      } else {
+        reject(
+          new Error(
+            `Cannot connect to backend server (${API_BASE_URL}). Please ensure the FastAPI server is running on port 8000.`
+          )
+        );
+      }
     };
 
     xhr.send(formData);
@@ -147,12 +179,7 @@ export async function generateStudyPlan(
     }
     return data.plan;
   } catch (err: any) {
-    if (err.message?.includes('Failed to fetch') || err.name === 'TypeError') {
-      throw new Error(
-        `Cannot connect to backend server (${API_BASE_URL}). Please ensure the FastAPI server is running on port 8000.`
-      );
-    }
-    throw err;
+    throw formatNetworkError(err);
   }
 }
 
@@ -178,30 +205,38 @@ export async function updateTaskStatus(
   isCompleted: boolean
 ): Promise<{ success: boolean; stats: StudyPlanStats }> {
   const headers = getAuthHeaders();
-  const res = await fetch(`${API_BASE_URL}/api/study-plans/tasks/${taskId}`, {
-    method: 'PATCH',
-    headers: {
-      ...headers,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ is_completed: isCompleted }),
-  });
+  try {
+    const res = await fetch(`${API_BASE_URL}/api/study-plans/tasks/${taskId}`, {
+      method: 'PATCH',
+      headers: {
+        ...headers,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ is_completed: isCompleted }),
+    });
 
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    throw new Error(data.detail || 'Failed to update task completion');
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.detail || 'Failed to update task completion');
+    }
+    return data;
+  } catch (err: any) {
+    throw formatNetworkError(err);
   }
-  return data;
 }
 
 export async function deleteStudyPlan(planId: number): Promise<void> {
   const headers = getAuthHeaders();
-  const res = await fetch(`${API_BASE_URL}/api/study-plans/${planId}`, {
-    method: 'DELETE',
-    headers,
-  });
-  if (!res.ok) {
-    const data = await res.json().catch(() => ({}));
-    throw new Error(data.detail || 'Failed to delete study plan');
+  try {
+    const res = await fetch(`${API_BASE_URL}/api/study-plans/${planId}`, {
+      method: 'DELETE',
+      headers,
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.detail || 'Failed to delete study plan');
+    }
+  } catch (err: any) {
+    throw formatNetworkError(err);
   }
 }

@@ -87,32 +87,32 @@ export default function StudyPlanPage() {
   const [showConfigForm, setShowConfigForm] = useState(false);
   const [taskUpdatingId, setTaskUpdatingId] = useState<number | null>(null);
 
-  // Initial data loading
-  useEffect(() => {
-    const { token } = getSession();
-    if (!token) {
-      setIsAuthenticated(false);
-      setSessionChecked(true);
-      setLoadingPlan(false);
-      return;
-    }
+  const [initialLoadError, setInitialLoadError] = useState<string | null>(null);
 
-    setIsAuthenticated(true);
-    setSessionChecked(true);
-
-    // Fetch user documents & existing plan concurrently
-    Promise.all([
-      getStudyDocuments().catch(() => []),
-      getLatestStudyPlan().catch(() => null),
-    ]).then(([docs, plan]) => {
-      setDocuments(docs);
-      if (docs.length > 0) {
-        setSelectedDocId(docs[0].id);
-        setSelectedDoc(docs[0]);
+  const loadInitialData = () => {
+    setLoadingPlan(true);
+    setInitialLoadError(null);
+    Promise.allSettled([
+      getStudyDocuments(),
+      getLatestStudyPlan(),
+    ]).then(([docsRes, planRes]) => {
+      if (docsRes.status === 'fulfilled') {
+        const docs = docsRes.value;
+        setDocuments(docs);
+        if (docs.length > 0) {
+          setSelectedDocId((prev) => prev || docs[0].id);
+          setSelectedDoc((prev) => prev || docs[0]);
+        }
+      } else {
+        const msg = docsRes.reason?.message || 'Could not load documents';
+        if (msg.includes('Cannot connect')) {
+          setInitialLoadError(msg);
+        }
       }
-      if (plan) {
+
+      if (planRes.status === 'fulfilled' && planRes.value) {
+        const plan = planRes.value;
         setActivePlan(plan);
-        // Default expand today or Day 1
         const initialExpanded: Record<number, boolean> = {};
         const todayFormatted = new Date().toISOString().split('T')[0];
         let todayFound = false;
@@ -130,6 +130,21 @@ export default function StudyPlanPage() {
       }
       setLoadingPlan(false);
     });
+  };
+
+  // Initial data loading
+  useEffect(() => {
+    const { token } = getSession();
+    if (!token) {
+      setIsAuthenticated(false);
+      setSessionChecked(true);
+      setLoadingPlan(false);
+      return;
+    }
+
+    setIsAuthenticated(true);
+    setSessionChecked(true);
+    loadInitialData();
   }, []);
 
   // Update selected doc object when docId changes
@@ -711,6 +726,22 @@ export default function StudyPlanPage() {
               )}
             </div>
           </div>
+
+          {initialLoadError && (
+            <div className="p-4 rounded-2xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800/60 text-xs text-amber-800 dark:text-amber-200 flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5">
+                <AlertCircle className="w-4 h-4 shrink-0 text-amber-600 dark:text-amber-400" />
+                <span>{initialLoadError}</span>
+              </div>
+              <button
+                type="button"
+                onClick={loadInitialData}
+                className="px-3 py-1.5 rounded-xl bg-amber-600 hover:bg-amber-700 text-white font-semibold text-xs shrink-0 cursor-pointer transition-colors"
+              >
+                Reconnect
+              </button>
+            </div>
+          )}
 
           {/* =========================================================================
               SECTION A — Uploaded PDF

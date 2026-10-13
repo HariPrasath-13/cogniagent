@@ -15,22 +15,164 @@ try:
 except ImportError:
     from assessment_auth import current_user, AuthenticatedUser, DB_PATH
 
+import requests
+
 try:
-    from backend.assessment import read_pdf, ask_qwen, parse_model_json, db, MAX_PDF_SIZE
+    from backend.assessment import read_pdf, parse_model_json, db, MAX_PDF_SIZE
 except ImportError:
-    from assessment import read_pdf, ask_qwen, parse_model_json, db, MAX_PDF_SIZE
+    from assessment import read_pdf, parse_model_json, db, MAX_PDF_SIZE
 
 router = APIRouter(prefix="/api/study-plans", tags=["Study Plans"])
 
 
+def get_non_llama_models(api_key: str) -> list[str]:
+    """
+    Discovers available non-Llama models on the Groq account.
+    Filters out any Llama-based models per user constraint.
+    Prioritizes: qwen/qwen3.8-27b, openai/gpt-oss-120b, openai/gpt-oss-20b.
+    """
+    preferred = [
+        "qwen/qwen3.8-27b",
+        "openai/gpt-oss-120b",
+        "openai/gpt-oss-20b",
+    ]
+    try:
+        resp = requests.get(
+            "https://api.groq.com/openai/v1/models",
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=5
+        )
+        if resp.status_code == 200:
+            available_ids = {m.get("id") for m in resp.json().get("data", []) if m.get("id")}
+            selected = [m for m in preferred if m in available_ids]
+            for mid in available_ids:
+                mid_lower = mid.lower()
+                # Strictly exclude all Llama models, audio models, guards
+                if any(skip in mid_lower for skip in ["llama", "whisper", "guard", "safeguard", "orpheus"]):
+                    continue
+                if mid not in selected:
+                    selected.append(mid)
+            if selected:
+                print(f"[STUDY PLAN AI] Selected active non-Llama models: {selected}", flush=True)
+                return selected
+    except Exception as ex:
+        print(f"[STUDY PLAN AI] Warning fetching models list: {ex}", flush=True)
+    return preferred
+
+
+def ask_study_plan_ai(prompt: str, as_json: bool = True) -> str:
+    """
+    Executes fast cloud inference specifically avoiding any Llama models.
+    Prioritizes Qwen 3.8 27B and GPT-OSS models via Groq, then Gemini 1.5 Flash.
+    """
+    groq_api_key = os.getenv("GROQ_API_KEY", "").strip()
+    if groq_api_key:
+        active_models = get_non_llama_models(groq_api_key)
+        headers = {
+            "Authorization": f"Bearer {groq_api_key}",
+            "Content-Type": "application/json"
+        }
+
+        for groq_model in active_models:
+            # Enforce non-Llama safeguard
+            if "llama" in groq_model.lower():
+                continue
+
+            attempts = [True, False] if as_json else [False]
+            for try_json_format in attempts:
+                try:
+                    t0 = time.time()
+                    body = {
+                        "model": groq_model,
+                        "messages": [
+                            {
+                                "role": "system",
+                                "content": (
+                                    "You are an expert academic timetable and curriculum designer. "
+                                    "Return only valid, well-formed JSON matching the requested structure."
+                                    if as_json else
+                                    "You are a helpful, knowledgeable academic study planner."
+                                )
+                            },
+                            {"role": "user", "content": prompt}
+                        ],
+                        "temperature": 0.2
+                    }
+                    if try_json_format:
+                        body["response_format"] = {"type": "json_object"}
+
+                    resp = requests.post(
+                        "https://api.groq.com/openai/v1/chat/completions",
+                        headers=headers,
+                        json=body,
+                        timeout=30
+                    )
+                    if resp.status_code == 200:
+                        content = resp.json()["choices"][0]["message"]["content"].strip()
+                        elapsed = time.time() - t0
+                        print(f"[STUDY PLAN AI] Success with non-Llama model '{groq_model}' in {elapsed:.2f}s!", flush=True)
+                        return content
+                    elif resp.status_code == 400 and try_json_format:
+                        continue
+                    else:
+                        print(f"[STUDY PLAN AI] Model {groq_model} returned {resp.status_code}, trying next...", flush=True)
+                        break
+                except Exception as ex:
+                    print(f"[STUDY PLAN AI] Model {groq_model} exception: {ex}", flush=True)
+                    break
+
+    # Cloud Google Gemini Fallback
+    gemini_key = os.getenv("GEMINI_API_KEY", "").strip()
+    if gemini_key:
+        try:
+            t0 = time.time()
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={gemini_key}"
+            payload = {
+                "contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": {"temperature": 0.2}
+            }
+            if as_json:
+                payload["generationConfig"]["responseMimeType"] = "application/json"
+            resp = requests.post(url, json=payload, timeout=30)
+            if resp.status_code == 200:
+                data = resp.json()
+                content = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+                elapsed = time.time() - t0
+                print(f"[STUDY PLAN AI] Response received via Gemini in {elapsed:.2f}s", flush=True)
+                return content
+        except Exception as e:
+            print(f"[STUDY PLAN AI] Gemini fallback error: {e}", flush=True)
+
+    raise RuntimeError("Non-Llama cloud AI model unavailable.")
+
+
+
 def init_study_plan_db():
     with db() as conn:
+        # 1. Ensure user_documents table exists
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_documents (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT NOT NULL,
+                user_email TEXT NOT NULL,
+                filename TEXT NOT NULL,
+                text_content TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_user_documents_user
+            ON user_documents(user_id, created_at)
+        """)
+
+        # 2. Ensure study_plans table exists with all required columns
         conn.execute("""
             CREATE TABLE IF NOT EXISTS study_plans (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id TEXT NOT NULL,
                 user_email TEXT NOT NULL,
                 document_id INTEGER NOT NULL,
+                document_name TEXT,
                 title TEXT NOT NULL,
                 start_date TEXT NOT NULL,
                 target_date TEXT NOT NULL,
@@ -43,6 +185,10 @@ def init_study_plan_db():
                 total_days INTEGER NOT NULL,
                 total_hours REAL NOT NULL,
                 limitation_note TEXT,
+                config_json TEXT,
+                plan_json TEXT,
+                completed_sessions_json TEXT DEFAULT '[]',
+                progress_pct REAL DEFAULT 0.0,
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL
             )
@@ -52,8 +198,9 @@ def init_study_plan_db():
             ON study_plans(user_id, created_at)
         """)
 
-        # Safe migrations for existing databases
+        # Safe migrations for existing databases to ensure every column exists
         for col_name, col_type in [
+            ("document_name", "TEXT"),
             ("title", "TEXT"),
             ("start_date", "TEXT"),
             ("target_date", "TEXT"),
@@ -66,12 +213,19 @@ def init_study_plan_db():
             ("total_days", "INTEGER"),
             ("total_hours", "REAL"),
             ("limitation_note", "TEXT"),
+            ("config_json", "TEXT"),
+            ("plan_json", "TEXT"),
+            ("completed_sessions_json", "TEXT DEFAULT '[]'"),
+            ("progress_pct", "REAL DEFAULT 0.0"),
+            ("created_at", "INTEGER DEFAULT 0"),
+            ("updated_at", "INTEGER DEFAULT 0"),
         ]:
             try:
                 conn.execute(f"ALTER TABLE study_plans ADD COLUMN {col_name} {col_type}")
             except sqlite3.OperationalError:
                 pass
 
+        # 3. Ensure study_plan_tasks table exists
         conn.execute("""
             CREATE TABLE IF NOT EXISTS study_plan_tasks (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -92,6 +246,23 @@ def init_study_plan_db():
             CREATE INDEX IF NOT EXISTS idx_study_plan_tasks_plan
             ON study_plan_tasks(plan_id, day_number)
         """)
+
+        for col_name, col_type in [
+            ("plan_id", "INTEGER"),
+            ("day_number", "INTEGER"),
+            ("date", "TEXT"),
+            ("start_time", "TEXT"),
+            ("end_time", "TEXT"),
+            ("duration_minutes", "INTEGER"),
+            ("activity_type", "TEXT"),
+            ("topic", "TEXT"),
+            ("is_completed", "INTEGER DEFAULT 0"),
+            ("created_at", "INTEGER DEFAULT 0"),
+        ]:
+            try:
+                conn.execute(f"ALTER TABLE study_plan_tasks ADD COLUMN {col_name} {col_type}")
+            except sqlite3.OperationalError:
+                pass
 
 
 # Call DB initializer
@@ -450,7 +621,7 @@ Respond ONLY with valid JSON in this exact structure:
 
     ai_json = None
     try:
-        raw_ai_resp = ask_qwen(prompt, as_json=True)
+        raw_ai_resp = ask_study_plan_ai(prompt, as_json=True)
         ai_json = parse_model_json(raw_ai_resp)
     except Exception as ex:
         print(f"[STUDY PLAN AI WARNING] AI model exception: {ex}. Proceeding with deterministic fallback curriculum.", flush=True)
@@ -588,7 +759,7 @@ def get_latest_study_plan(user: AuthenticatedUser = Depends(current_user)):
     """Retrieves the latest saved study plan with its tasks for the student."""
     with db() as conn:
         plan_row = conn.execute("""
-            SELECT p.*, d.filename
+            SELECT p.*, COALESCE(p.document_name, d.filename) as filename
             FROM study_plans p
             LEFT JOIN user_documents d ON p.document_id = d.id
             WHERE p.user_id = ? OR p.user_email = ?
@@ -632,7 +803,7 @@ def get_study_plan_by_id(
     """Retrieves a specific study plan by ID with ownership enforcement."""
     with db() as conn:
         plan_row = conn.execute("""
-            SELECT p.*, d.filename
+            SELECT p.*, COALESCE(p.document_name, d.filename) as filename
             FROM study_plans p
             LEFT JOIN user_documents d ON p.document_id = d.id
             WHERE p.id = ? AND (p.user_id = ? OR p.user_email = ?)
