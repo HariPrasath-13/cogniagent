@@ -1090,3 +1090,11 @@ except ImportError:
 
 app.include_router(assessment_router)
 
+# ----------------- Study Plan Router -----------------
+try:
+    from backend.study_plan import router as study_plan_router
+except ImportError:
+    from study_plan import router as study_plan_router
+
+app.include_router(study_plan_router)
+
