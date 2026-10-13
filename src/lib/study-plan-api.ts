@@ -131,30 +131,46 @@ export async function generateStudyPlan(
   config: CreatePlanConfig
 ): Promise<StudyPlan> {
   const headers = getAuthHeaders();
-  const res = await fetch(`${API_BASE_URL}/api/study-plans/generate`, {
-    method: 'POST',
-    headers: {
-      ...headers,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(config),
-  });
+  try {
+    const res = await fetch(`${API_BASE_URL}/api/study-plans/generate`, {
+      method: 'POST',
+      headers: {
+        ...headers,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(config),
+    });
 
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    throw new Error(data.detail || 'Failed to generate study plan');
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.detail || 'Failed to generate study plan');
+    }
+    return data.plan;
+  } catch (err: any) {
+    if (err.message?.includes('Failed to fetch') || err.name === 'TypeError') {
+      throw new Error(
+        `Cannot connect to backend server (${API_BASE_URL}). Please ensure the FastAPI server is running on port 8000.`
+      );
+    }
+    throw err;
   }
-  return data.plan;
 }
 
 export async function getLatestStudyPlan(): Promise<StudyPlan | null> {
   const headers = getAuthHeaders();
-  const res = await fetch(`${API_BASE_URL}/api/study-plans/latest`, { headers });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    throw new Error(data.detail || 'Failed to fetch latest study plan');
+  try {
+    const res = await fetch(`${API_BASE_URL}/api/study-plans/latest`, { headers });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.detail || 'Failed to fetch latest study plan');
+    }
+    return data.plan;
+  } catch (err: any) {
+    if (err.message?.includes('Failed to fetch') || err.name === 'TypeError') {
+      return null;
+    }
+    throw err;
   }
-  return data.plan;
 }
 
 export async function updateTaskStatus(
