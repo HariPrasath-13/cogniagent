@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CogniAgent — End-to-End System Workflow Architecture</title>
+    <style>
+        :root {
+            --bg: #0b0f19;
+            --card-bg: #111827;
+            --text-main: #f9fafb;
+            --text-muted: #9ca3af;
+            --border: #1f2937;
+            --accent-blue: #3b82f6;
+            --accent-green: #10b981;
+            --accent-amber: #f59e0b;
+            --accent-purple: #8b5cf6;
+            --accent-indigo: #6366f1;
+            --accent-rose: #f43f5e;
+            --accent-slate: #475569;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+        body {
+            background-color: var(--bg);
+            color: var(--text-main);
+            padding: 30px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        h1 {
+            font-size: 26px;
+            font-weight: 700;
+            margin-bottom: 8px;
+            background: linear-gradient(90deg, #60a5fa, #a78bfa, #f472b6);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            text-align: center;
+        }
+        .subtitle {
+            color: var(--text-muted);
+            font-size: 14px;
+            margin-bottom: 30px;
+            text-align: center;
+        }
+        .canvas {
+            width: 100%;
+            max-width: 1350px;
+            background: #0f172a;
+            border: 1px solid #1e293b;
+            border-radius: 16px;
+            padding: 30px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.6);
+        }
+        .flow-row {
+            display: grid;
+            grid-template-columns: 1fr auto 1fr auto 1.2fr auto 1.6fr;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 35px;
+        }
+        .arrow {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            color: #64748b;
+            font-size: 22px;
+            font-weight: bold;
+        }
+        .arrow-label {
+            font-size: 10px;
+            color: #94a3b8;
+            margin-top: 2px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .box {
+            border-radius: 12px;
+            padding: 18px;
+            display: flex;
+            flex-direction: column;
+            height: 100%;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+            border-width: 2px;
+            border-style: solid;
+        }
+        .box-title {
+            font-size: 15px;
+            font-weight: 700;
+            padding-bottom: 8px;
+            margin-bottom: 10px;
+            border-bottom: 1px solid rgba(255,255,255,0.15);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .box-item {
+            font-size: 12px;
+            line-height: 1.5;
+            margin-bottom: 6px;
+        }
+        .tag {
+            display: inline-block;
+            font-size: 10px;
+            font-weight: 600;
+            padding: 2px 6px;
+            border-radius: 4px;
+            margin-top: 4px;
+            background: rgba(255,255,255,0.1);
+        }
+        
+        /* Box color schemes */
+        .box-auth { background: #0c2340; border-color: #3b82f6; color: #bfdbfe; }
+        .box-auth .box-title { color: #93c5fd; }
+        
+        .box-landing { background: #064e3b; border-color: #10b981; color: #a7f3d0; }
+        .box-landing .box-title { color: #6ee7b7; }
+
+        .box-nlp { background: #451a03; border-color: #f59e0b; color: #fde68a; }
+        .box-nlp .box-title { color: #fcd34d; }
+
+        .box-rag { background: #3b0764; border-color: #a855f7; color: #f3e8ff; }
+        .box-rag .box-title { color: #d8b4fe; }
+
+        .box-tutor { background: #1e1b4b; border-color: #6366f1; color: #c7d2fe; }
+        .box-tutor .box-title { color: #a5b4fc; }
+
+        .box-plan { background: #4c0519; border-color: #f43f5e; color: #fecdd3; }
+        .box-plan .box-title { color: #fda4af; }
+
+        .comp-table {
+            background: rgba(0,0,0,0.3);
+            border-radius: 8px;
+            padding: 8px;
+            margin-bottom: 10px;
+            font-size: 11px;
+            border: 1px solid rgba(255,255,255,0.1);
+        }
+        .comp-row {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 4px;
+            padding-bottom: 4px;
+            border-bottom: 1px dashed rgba(255,255,255,0.1);
+        }
+        .comp-row:last-child { border-bottom: none; margin-bottom: 0; padding-bottom: 0; }
+        .model-name { font-weight: 700; }
+        .flaw { color: #fca5a5; }
+        .strength { color: #86efac; font-weight: 600; }
+
+        .sub-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            margin-bottom: 25px;
+        }
+
+        .db-bar {
+            background: #1e293b;
+            border: 2px solid #475569;
+            border-radius: 12px;
+            padding: 16px 22px;
+            color: #cbd5e1;
+        }
+        .db-title {
+            font-size: 14px;
+            font-weight: 700;
+            color: #f8fafc;
+            margin-bottom: 8px;
+            text-transform: uppercase;
+        }
+        .db-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 12px;
+            font-size: 11px;
+        }
+        .db-card {
+            background: #0f172a;
+            padding: 8px 12px;
+            border-radius: 6px;
+            border: 1px solid #334155;
+        }
+        .db-card strong { color: #38bdf8; }
+    </style>
+</head>
+<body>
+
+    <h1>CogniAgent — End-to-End System Workflow Architecture</h1>
+    <div class="subtitle">Complete technical blueprint from User Login to Grounded RAG Assessment, AI Tutor & Database schema</div>
+
+    <div class="canvas">
+
+        <!-- Main Pipeline Flow -->
+        <div class="flow-row">
+            
+            <!-- 1. Authentication -->
+            <div class="box box-auth">
+                <div class="box-title">1. User Login</div>
+                <div class="box-item"><strong>Options:</strong> Sign In / Sign Up</div>
+                <div class="box-item"><strong>Tech Stack:</strong> Next.js (App Router), FastAPI, Passlib (bcrypt hash), Python-JOSE</div>
+                <div class="box-item"><strong>Security Feature:</strong> 2-Step OTP Verification via Gmail SMTP / Resend API (300s expiry, rate limited)</div>
+                <span class="tag">DB: users, otps, sessions</span>
+            </div>
+
+            <div class="arrow">➔<span class="arrow-label">JWT Token</span></div>
+
+            <!-- 2. Landing Page -->
+            <div class="box box-landing">
+                <div class="box-title">2. Landing Page</div>
+                <div class="box-item"><strong>Dashboard Overview:</strong> Student Info, Email verification badge, Profile score</div>
+                <div class="box-item"><strong>Cognitive Metrics:</strong> Overall score, assessment counts, topic mastery level</div>
+                <div class="box-item"><strong>Actions:</strong> Upload Study Material, Start Quiz, AI Tutor, Study Plan</div>
+                <span class="tag">Next.js Dashboard</span>
+            </div>
+
+            <div class="arrow">➔<span class="arrow-label">Upload PDF</span></div>
+
+            <!-- 3. PDF Ingestion & NLP -->
+            <div class="box box-nlp">
+                <div class="box-title">3. PDF & Deep NLP</div>
+                <div class="box-item"><strong>Upload:</strong> PyPDF parser (up to 10MB limit), text cleaner</div>
+                <div class="box-item"><strong>NLP Pipeline Steps:</strong></div>
+                <div class="box-item">• <strong>Tokenization:</strong> Sub-word byte-pair encoding</div>
+                <div class="box-item">• <strong>Embeddings:</strong> Dense semantic vector spaces</div>
+                <div class="box-item">• <strong>Positional Encoding:</strong> Token order awareness</div>
+                <div class="box-item">• <strong>Transformer Layer:</strong> Multi-Head Self Attention mapping chunk relations</div>
+                <span class="tag">DB: user_documents</span>
+            </div>
+
+            <div class="arrow">➔<span class="arrow-label">Context RAG</span></div>
+
+            <!-- 4. Grounded RAG & Question Gen -->
+            <div class="box box-rag">
+                <div class="box-title">4. Grounded RAG Generator</div>
+                
+                <div class="comp-table">
+                    <div class="comp-row">
+                        <span class="model-name">Phi Model</span>
+                        <span class="flaw">Flaw: Small context window & hallucinations on multi-topic PDFs</span>
+                    </div>
+                    <div class="comp-row">
+                        <span class="model-name">Qwen Model</span>
+                        <span class="flaw">Flaw: High inference latency & verbose unformatted output</span>
+                    </div>
+                    <div class="comp-row">
+                        <span class="model-name">Cogni Custom</span>
+                        <span class="strength">Advantage: Zero hallucination, strict context grounding & JSON format</span>
+                    </div>
+                </div>
+
+                <div class="box-item"><strong>Assessment Features:</strong></div>
+                <div class="box-item">• <strong>Timed Assessment:</strong> Live countdown timer, time tracking, auto-submit</div>
+                <div class="box-item">• <strong>Difficulty Levels:</strong> Easy, Medium, Hard, Adaptive</div>
+                <div class="box-item">• <strong>Evaluation:</strong> Real-time automated scoring & feedback</div>
+                <span class="tag">DB: assessments</span>
+            </div>
+
+        </div>
+
+        <!-- Secondary Adaptive Modules -->
+        <div class="sub-row">
+            
+            <!-- 5. AI Tutor -->
+            <div class="box box-tutor">
+                <div class="box-title">5. Interactive AI Tutor Module</div>
+                <div class="box-item"><strong>Technology:</strong> FastAPI Router + LLM Stream Engine + Context Matcher</div>
+                <div class="box-item"><strong>Functionality:</strong> Clarifies complex conceptual doubts using exact excerpts from uploaded materials.</div>
+                <div class="box-item"><strong>Key Feature:</strong> Grounded citations (shows source page and text snippet). Post-exam mistake analysis.</div>
+                <span class="tag">DB: tutor_messages (stores chat history & cited sources)</span>
+            </div>
+
+            <!-- 6. Adaptive Study Plan -->
+            <div class="box box-plan">
+                <div class="box-title">6. Adaptive Study Plan Module</div>
+                <div class="box-item"><strong>Technology:</strong> Python Curriculum Optimizer (study_plan.py)</div>
+                <div class="box-item"><strong>Functionality:</strong> Identifies conceptual weaknesses from quiz mistakes and creates day-by-day tailored revision schedules.</div>
+                <div class="box-item"><strong>Key Feature:</strong> Daily study milestones, dynamic re-assessment checkpoints, progressive difficulty ramp-up.</div>
+                <span class="tag">DB: study_plans (stores curriculum targets & completion status)</span>
+            </div>
+
+        </div>
+
+        <!-- Database Bar -->
+        <div class="db-bar">
+            <div class="db-title">Database Architecture — SQLite (auth.db) & Data Flow Mapping</div>
+            <div class="db-grid">
+                <div class="db-card">
+                    <strong>users & sessions:</strong> Stores user profiles, bcrypt password hashes, verification flags, and active bearer session tokens.
+                </div>
+                <div class="db-card">
+                    <strong>otps:</strong> Manages 6-digit verification codes, expiry timestamps (5 min), and failed attempt limit counters.
+                </div>
+                <div class="db-card">
+                    <strong>user_documents & assessments:</strong> Stores extracted PDF text, generated question JSON, student answers, timers, and test scores.
+                </div>
+                <div class="db-card">
+                    <strong>tutor_messages & study_plans:</strong> Persists two-way student-tutor dialogue, document citations, and dynamic study roadmaps.
+                </div>
+            </div>
+        </div>
+
+    </div>
+
+</body>
+</html>

@@ -27,6 +27,185 @@ import {
   TutorDocument,
 } from '@/lib/assessment-api';
 
+// Helper for human-readable inline markdown formatting (**bold**, `code`, *italic*)
+function renderInline(text: string): React.ReactNode {
+  const regex = /(\*\*[^*]+\*\*|`[^`]+`|\*[^*]+\*)/g;
+  const parts: React.ReactNode[] = [];
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+  let k = 0;
+
+  while ((match = regex.exec(text)) !== null) {
+    if (match.index > lastIndex) {
+      parts.push(text.substring(lastIndex, match.index));
+    }
+    const token = match[0];
+    if (token.startsWith('**') && token.endsWith('**')) {
+      parts.push(
+        <strong key={k++} className="font-bold text-slate-900 dark:text-white">
+          {token.slice(2, -2)}
+        </strong>
+      );
+    } else if (token.startsWith('`') && token.endsWith('`')) {
+      parts.push(
+        <code key={k++} className="px-1.5 py-0.5 rounded bg-slate-200/80 dark:bg-slate-700 text-xs font-mono">
+          {token.slice(1, -1)}
+        </code>
+      );
+    } else if (token.startsWith('*') && token.endsWith('*')) {
+      parts.push(<em key={k++}>{token.slice(1, -1)}</em>);
+    }
+    lastIndex = regex.lastIndex;
+  }
+  if (lastIndex < text.length) {
+    parts.push(text.substring(lastIndex));
+  }
+  return parts.length > 0 ? parts : text;
+}
+
+// Parses and presents tutor responses in an appealing, human-friendly layout
+function FormattedChatText({ content, isUser }: { content: string; isUser: boolean }) {
+  if (isUser) {
+    return <div className="whitespace-pre-line">{content}</div>;
+  }
+
+  const lines = content.split('\n');
+  const blocks: React.ReactNode[] = [];
+  let i = 0;
+  let blockKey = 0;
+
+  while (i < lines.length) {
+    const line = lines[i];
+    const trimmed = line.trim();
+
+    if (!trimmed) {
+      i++;
+      continue;
+    }
+
+    // 1. Detect Markdown Table
+    if (trimmed.startsWith('|') && trimmed.endsWith('|')) {
+      const tableLines: string[] = [];
+      while (i < lines.length && lines[i].trim().startsWith('|') && lines[i].trim().endsWith('|')) {
+        tableLines.push(lines[i].trim());
+        i++;
+      }
+
+      if (tableLines.length >= 2) {
+        const rawHeaders = tableLines[0].split('|').slice(1, -1);
+        const dataLines = tableLines.slice(1).filter((l) => !/^[|\s-:]+$/.test(l));
+
+        blocks.push(
+          <div key={blockKey++} className="overflow-x-auto my-3 rounded-xl border border-slate-200 dark:border-slate-700 shadow-2xs">
+            <table className="w-full text-left text-xs border-collapse">
+              <thead className="bg-slate-100 dark:bg-slate-700/60 text-slate-800 dark:text-slate-100 font-bold border-b border-slate-200 dark:border-slate-700">
+                <tr>
+                  {rawHeaders.map((h, hIdx) => (
+                    <th key={hIdx} className="px-3 py-2">
+                      {renderInline(h.trim())}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 dark:divide-slate-700/60 bg-white/40 dark:bg-slate-800/40">
+                {dataLines.map((dLine, rIdx) => {
+                  const cells = dLine.split('|').slice(1, -1);
+                  return (
+                    <tr key={rIdx} className="hover:bg-slate-50/70 dark:hover:bg-slate-700/30 transition-colors">
+                      {cells.map((c, cIdx) => (
+                        <td key={cIdx} className="px-3 py-2 text-slate-700 dark:text-slate-200">
+                          {renderInline(c.trim())}
+                        </td>
+                      ))}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        );
+        continue;
+      }
+    }
+
+    // 2. Headings (###, ##, #)
+    if (/^#{1,3}\s+/.test(trimmed)) {
+      const headingText = trimmed.replace(/^#{1,3}\s+/, '');
+      blocks.push(
+        <h4 key={blockKey++} className="font-bold text-sm text-slate-900 dark:text-white mt-3 mb-1.5 flex items-center gap-1.5">
+          <span className="w-1.5 h-1.5 rounded-full bg-indigo-500 inline-block"></span>
+          <span>{renderInline(headingText)}</span>
+        </h4>
+      );
+      i++;
+      continue;
+    }
+
+    // 3. Bullet points and numbered items
+    if (/^(?:[-*•]|\d+\.)\s+/.test(trimmed)) {
+      const listItems: string[] = [];
+      while (i < lines.length && /^(?:[-*•]|\d+\.)\s+/.test(lines[i].trim())) {
+        listItems.push(lines[i].trim());
+        i++;
+      }
+      blocks.push(
+        <ul key={blockKey++} className="space-y-1.5 my-2 pl-1">
+          {listItems.map((item, lIdx) => {
+            const isNumbered = /^\d+\./.test(item);
+            const numMatch = item.match(/^(\d+\.)\s+(.*)/);
+            const bulletMatch = item.match(/^[-*•]\s+(.*)/);
+
+            if (isNumbered && numMatch) {
+              return (
+                <li key={lIdx} className="flex items-start gap-2">
+                  <span className="font-bold text-indigo-600 dark:text-indigo-400 shrink-0 text-xs mt-0.5">
+                    {numMatch[1]}
+                  </span>
+                  <div className="flex-1 text-slate-700 dark:text-slate-200">{renderInline(numMatch[2])}</div>
+                </li>
+              );
+            } else if (bulletMatch) {
+              return (
+                <li key={lIdx} className="flex items-start gap-2">
+                  <span className="text-indigo-500 shrink-0 mt-1 text-xs">•</span>
+                  <div className="flex-1 text-slate-700 dark:text-slate-200">{renderInline(bulletMatch[1])}</div>
+                </li>
+              );
+            }
+            return (
+              <li key={lIdx} className="text-slate-700 dark:text-slate-200">
+                {renderInline(item)}
+              </li>
+            );
+          })}
+        </ul>
+      );
+      continue;
+    }
+
+    // 4. Standalone Bold heading line (e.g. "**1. Overview**" or "**Key Concepts**")
+    if (trimmed.startsWith('**') && trimmed.endsWith('**') && trimmed.length < 90) {
+      blocks.push(
+        <h4 key={blockKey++} className="font-bold text-sm text-slate-900 dark:text-white mt-3 mb-1">
+          {trimmed.slice(2, -2)}
+        </h4>
+      );
+      i++;
+      continue;
+    }
+
+    // 5. Regular paragraph
+    blocks.push(
+      <p key={blockKey++} className="my-1.5 text-slate-700 dark:text-slate-200 leading-relaxed">
+        {renderInline(trimmed)}
+      </p>
+    );
+    i++;
+  }
+
+  return <div className="space-y-1">{blocks}</div>;
+}
+
 export default function AiTutorPage() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -351,7 +530,7 @@ export default function AiTutorPage() {
                       : 'bg-slate-50 dark:bg-slate-800/80 text-slate-800 dark:text-slate-100 rounded-bl-xs border border-slate-200/80 dark:border-slate-700/80 shadow-2xs'
                   }`}
                 >
-                  <div className="whitespace-pre-line">{msg.text}</div>
+                  <FormattedChatText content={msg.text} isUser={isUser} />
 
                   {/* Source Evidence Citation Badge matching Screen 12 */}
                   {msg.source && (

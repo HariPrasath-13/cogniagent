@@ -9,10 +9,8 @@ import {
   ClipboardCheck,
   BookOpen,
   Bot,
-  User,
   Settings,
   LogOut,
-  Shield,
   X,
 } from 'lucide-react';
 import { CogniLogo } from '@/components/shared/CogniLogo';
@@ -32,7 +30,6 @@ export function StudentSidebar({ mobileOpen = false, onCloseMobile }: StudentSid
     { label: 'Take Test', href: '/test-setup', icon: ClipboardCheck },
     { label: 'Study Plan', href: '/study-plan', icon: BookOpen },
     { label: 'AI Tutor', href: '/ai-tutor', icon: Bot },
-    { label: 'Profile', href: '/profile', icon: User },
     { label: 'Settings', href: '/settings', icon: Settings },
   ];
 
@@ -82,16 +79,8 @@ export function StudentSidebar({ mobileOpen = false, onCloseMobile }: StudentSid
         })}
       </nav>
 
-      {/* Footer Nav / Portal switch */}
+      {/* Footer Nav */}
       <div className="p-3 border-t border-slate-800/80 space-y-1">
-        <Link
-          href="/admin"
-          onClick={onCloseMobile}
-          className="flex items-center gap-3 px-3.5 py-2 rounded-xl text-xs font-medium text-indigo-400 hover:text-indigo-300 hover:bg-indigo-950/40 transition-colors"
-        >
-          <Shield className="w-4 h-4" />
-          <span>Admin Portal</span>
-        </Link>
         <Link
           href="/signin"
           onClick={() => {
